@@ -1,6 +1,7 @@
 package dvap
 
 import (
+	"math/rand"
 	"sort"
 	"sync"
 )
@@ -262,6 +263,23 @@ func (s *Slicer[T]) Reverse() *Slicer[T] {
 	for i, j := 0, len(s.data)-1; i < j; i, j = i+1, j-1 {
 		s.data[i], s.data[j] = s.data[j], s.data[i]
 	}
+	return s
+}
+
+// Shuffle 随机打乱顺序
+func (s *Slicer[T]) Shuffle(source int64) *Slicer[T] {
+	s.lock.Lock()
+	defer s.lock.Unlock()
+	r := rand.New(rand.NewSource(source))
+	r.Shuffle(len(s.data), func(i, j int) {
+		s.data[i], s.data[j] = s.data[j], s.data[i]
+	})
+	return s
+}
+
+// Rand 随机打乱顺序
+func (s *Slicer[T]) Rand(source int64) *Slicer[T] {
+	s.Shuffle(source)
 	return s
 }
 
