@@ -168,6 +168,20 @@ func (s *Slicer[T]) PopTail() T {
 	return s._pop_idx(len(s.data) - 1)
 }
 
+// Remove 根据条件删除元素
+func (s *Slicer[T]) Remove(_f func(T) bool) *Slicer[T] {
+	s.lock.Lock()
+	defer s.lock.Unlock()
+	var ndata = make([]T, 0, len(s.data))
+	for _, v := range s.data {
+		if !_f(v) {
+			ndata = append(ndata, v)
+		}
+	}
+	s.data = ndata
+	return s
+}
+
 // Append 向切片尾部添加元素
 func (s *Slicer[T]) Append(item ...T) *Slicer[T] {
 	s.lock.Lock()
