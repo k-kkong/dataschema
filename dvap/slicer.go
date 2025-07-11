@@ -153,6 +153,18 @@ func (s *Slicer[T]) PopIdx(idx int) T {
 	return s._pop_idx(idx)
 }
 
+// PopWhere 取出指定位置的元素并且在切片中删除
+func (s *Slicer[T]) PopWhere(_f func(T) bool) T {
+	s.lock.Lock()
+	defer s.lock.Unlock()
+	for idx, v := range s.data {
+		if _f(v) {
+			return s._pop_idx(idx)
+		}
+	}
+	return *new(T)
+}
+
 // PopHead 取出第一个元素并且在切片中删除
 func (s *Slicer[T]) PopHead() T {
 	s.lock.Lock()
