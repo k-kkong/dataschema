@@ -40,19 +40,15 @@ func StringToDate(date_str string) time.Time {
 		}
 
 		if len(schunks) > 2 {
-
-			if strings.Contains(schunks[2], ".") {
-
-				sschunks := strings.Split(schunks[2], ".")
-				if len(sschunks) > 0 {
-					sec, _ = strconv.Atoi(sschunks[0])
-				}
-				if len(sschunks) > 1 {
-					nsec, _ = strconv.Atoi(sschunks[1])
-				}
-
+			// if strings.Contains(schunks[2], ".") {
+			sschunks := strings.Split(schunks[2], ".")
+			if len(sschunks) > 0 {
+				sec, _ = strconv.Atoi(sschunks[0])
 			}
-
+			if len(sschunks) > 1 {
+				nsec, _ = strconv.Atoi(sschunks[1])
+			}
+			// }
 		}
 	}
 	return time.Date(year, time.Month(month), day, hour, min, sec, nsec, time.Local)

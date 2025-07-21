@@ -125,6 +125,13 @@ func GetUpdateMapping(model interface{}, reqdata gjson.Result) (map[string]inter
 	var mapping = map[string]interface{}{}
 	gjson.Parse(useMapping).ForEach(func(key, value gjson.Result) bool {
 		if reqdata.Get(key.String()).Exists() {
+
+			_strv := reqdata.Get(key.String()).String()
+			if strings.Contains(value.String(), "*") {
+				if _strv == "" || _strv == "null" {
+					mapping[key.String()] = nil
+				}
+			}
 			// fmt.Println()
 			v := strings.ReplaceAll(value.String(), "*", "")
 			switch v {
@@ -135,7 +142,7 @@ func GetUpdateMapping(model interface{}, reqdata gjson.Result) (map[string]inter
 			case "string", "models.JSONStringColumn":
 				mapping[key.String()] = reqdata.Get(key.String()).String()
 			case "models.JSONTime", "time.Time", "gorm.DeletedAt", "gorm.UpdatedAt", "gorm.CreatedAt":
-				tv := StringToDate(reqdata.Get(key.String()).String())
+				tv := StringToDate(_strv)
 				if Validate(tv) {
 					mapping[key.String()] = tv
 				}
@@ -163,6 +170,12 @@ func GetCreateMapping(model interface{}, reqdata gjson.Result) (map[string]inter
 			return true
 		}
 		if reqdata.Get(key.String()).Exists() {
+			_strv := reqdata.Get(key.String()).String()
+			if strings.Contains(value.String(), "*") {
+				if _strv == "" || _strv == "null" {
+					mapping[key.String()] = nil
+				}
+			}
 			// fmt.Println()
 			v := strings.ReplaceAll(value.String(), "*", "")
 			switch v {
@@ -173,7 +186,7 @@ func GetCreateMapping(model interface{}, reqdata gjson.Result) (map[string]inter
 			case "string", "models.JSONStringColumn":
 				mapping[key.String()] = reqdata.Get(key.String()).String()
 			case "models.JSONTime", "time.Time", "gorm.DeletedAt", "gorm.UpdatedAt", "gorm.CreatedAt":
-				tv := StringToDate(reqdata.Get(key.String()).String())
+				tv := StringToDate(_strv)
 				if Validate(tv) {
 					mapping[key.String()] = tv
 				}
