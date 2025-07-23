@@ -11,8 +11,6 @@ import (
 	"github.com/tidwall/gjson"
 )
 
-type DataUnit map[string]any
-
 func isIntegerStr(s string) (int, bool) {
 	val, err := strconv.Atoi(s)
 	return val, err == nil
@@ -92,8 +90,9 @@ func setValue(target reflect.Value, paths []string, value any) reflect.Value {
 	// fmt.Println(target.Interface())
 	// 如果是invlaid类型，需要初始化一下
 	if !target.IsValid() {
-		target = reflect.ValueOf(DataUnit{})
+		target = reflect.ValueOf(map[string]any{})
 	}
+	// fmt.Println(target.Interface())
 
 	ori_target_kind := target.Kind()
 	if idx, ok := isIntegerStr(paths[0]); ok {
@@ -113,9 +112,9 @@ func setValue(target reflect.Value, paths []string, value any) reflect.Value {
 		}
 
 		// 判断长度
-		// 如果数组长度足够，则直接设置值，否则给target填充null，直到下标idx
+		// 如果数组长度不够，需要填充null值到idx
 		if idx >= 0 && idx < target.Len() {
-			target.Index(idx).Set(reflect.ValueOf(value))
+			// target.Index(idx).Set(reflect.ValueOf(value))
 		} else {
 			l := target.Len()
 			elemType := target.Type().Elem()
@@ -125,21 +124,20 @@ func setValue(target reflect.Value, paths []string, value any) reflect.Value {
 				target = reflect.Append(target, zeroVal)
 				l++
 			}
-			// 不需要 多加， idx 下标
-			// target = reflect.Append(target, zeroVal)
 		}
 		if len(paths) == 1 {
 			// 设置值
 			target.Index(idx).Set(reflect.ValueOf(value))
 		} else {
 			next := target.Index(idx)
+			// fmt.Println(next.Interface())
 			nextv := setValue(next, paths[1:], value)
 			target.Index(idx).Set(nextv)
 		}
 
 	} else {
 		// 判断类型，如果不是 map[string]any，则转换复制
-		if target.Type() != reflect.TypeOf(DataUnit{}) {
+		if target.Type() != reflect.TypeOf(map[string]any{}) {
 			tv := make(map[string]any)
 			if ori_target_kind == reflect.Map {
 				for _, key := range target.MapKeys() {
@@ -185,16 +183,38 @@ func (bm *BMap) Map() map[string]any {
 	return v
 }
 
+func (bm *BMap) IsArrsy() bool {
+	return bm.rvalue.Kind() == reflect.Slice || bm.rvalue.Kind() == reflect.Array
+}
+
+func (bm *BMap) Array() []BMap {
+	var values []BMap
+	switch bm.rvalue.Kind() {
+	case reflect.Slice, reflect.Array:
+		for i := 0; i < bm.rvalue.Len(); i++ {
+			values = append(values, *Parse(bm.rvalue.Index(i).Interface()))
+		}
+	default:
+		values = append(values, *bm)
+	}
+	return values
+}
+
 func (bm *BMap) String() string {
+	bv := bm.Value()
 	var value string
 	switch bm.rvalue.Kind() {
 	case reflect.Map, reflect.Slice, reflect.Array:
-		b, _ := json.Marshal(bm.Value())
+		b, _ := json.Marshal(bv)
 		value = string(b)
 	case reflect.String:
-		value = bm.Value().(string)
+		value = bv.(string)
 	default:
-		value = fmt.Sprint(bm.Value())
+		if t, ok := bv.(time.Time); ok {
+			value = t.Format(time.RFC3339)
+		} else {
+			value = fmt.Sprint(bv)
+		}
 	}
 	return value
 }
@@ -225,67 +245,68 @@ func (bm *BMap) Bool() bool {
 
 func (bm *BMap) TimeFormat(format string) time.Time {
 	var value time.Time
-	value, _ = time.ParseInLocation(format, bm.String(), time.Local)
+	value, _ = time.Parse(format, bm.String())
 	return value
 }
 
 func (bm *BMap) Time() time.Time {
 	var value time.Time
 	var err error
-	value, err = time.Parse(time.DateTime, bm.String())
+	str := bm.String()
+	value, err = time.Parse(time.DateTime, str)
 	if err != nil {
-		value, err = time.Parse(time.DateOnly, bm.String())
+		value, err = time.Parse(time.DateOnly, str)
 	}
 	if err != nil {
-		value, err = time.Parse(time.RFC3339, bm.String())
+		value, err = time.Parse(time.RFC3339, str)
 	}
 	if err != nil {
-		value, err = time.Parse(time.RFC3339Nano, bm.String())
+		value, err = time.Parse(time.RFC3339Nano, str)
 	}
 	if err != nil {
-		value, _ = time.Parse(time.TimeOnly, bm.String())
+		value, _ = time.Parse(time.TimeOnly, str)
 	}
 	if err != nil {
-		value, err = time.Parse(time.ANSIC, bm.String())
+		value, err = time.Parse(time.ANSIC, str)
 	}
 	if err != nil {
-		value, err = time.Parse(time.UnixDate, bm.String())
+		value, err = time.Parse(time.UnixDate, str)
 	}
 	if err != nil {
-		value, err = time.Parse(time.RubyDate, bm.String())
+		value, err = time.Parse(time.RubyDate, str)
 	}
 	if err != nil {
-		value, err = time.Parse(time.RFC822, bm.String())
+		value, err = time.Parse(time.RFC822, str)
 	}
 	if err != nil {
-		value, err = time.Parse(time.RFC822Z, bm.String())
+		value, err = time.Parse(time.RFC822Z, str)
 	}
 	if err != nil {
-		value, err = time.Parse(time.RFC850, bm.String())
+		value, err = time.Parse(time.RFC850, str)
 	}
 	if err != nil {
-		value, err = time.Parse(time.RFC1123, bm.String())
+		value, err = time.Parse(time.RFC1123, str)
 	}
 	if err != nil {
-		value, err = time.Parse(time.RFC1123Z, bm.String())
+		value, err = time.Parse(time.RFC1123Z, str)
 	}
 	if err != nil {
-		value, err = time.Parse(time.Kitchen, bm.String())
+		value, err = time.Parse(time.Kitchen, str)
 	}
 	if err != nil {
-		value, err = time.Parse(time.Stamp, bm.String())
+		value, err = time.Parse(time.Stamp, str)
 	}
 	if err != nil {
-		value, err = time.Parse(time.StampMilli, bm.String())
+		value, err = time.Parse(time.StampMilli, str)
 	}
 	if err != nil {
-		value, err = time.Parse(time.StampMicro, bm.String())
+		value, err = time.Parse(time.StampMicro, str)
 	}
 	if err != nil {
-		value, err = time.Parse(time.StampNano, bm.String())
+		value, err = time.Parse(time.StampNano, str)
 	}
 	if err != nil {
-		value, _ = time.Parse(time.Layout, bm.String())
+		value, _ = time.Parse(time.Layout, str)
 	}
 	return value
 }

@@ -34,12 +34,12 @@ func strctVal(s interface{}) reflect.Value {
 	return v
 }
 
-func (s *StructsUnpack) Map() DataUnit {
-	out := make(DataUnit)
+func (s *StructsUnpack) Map() map[string]any {
+	out := make(map[string]any)
 	s.FillMap(out)
 	return out
 }
-func (s *StructsUnpack) FillMap(out DataUnit) {
+func (s *StructsUnpack) FillMap(out map[string]any) {
 	if out == nil {
 		return
 	}
@@ -93,8 +93,8 @@ func (s *StructsUnpack) FillMap(out DataUnit) {
 		}
 
 		if isSubStruct && (tagOpts.Has("flatten")) {
-			for k := range finalVal.(DataUnit) {
-				out[k] = finalVal.(DataUnit)[k]
+			for k := range finalVal.(map[string]any) {
+				out[k] = finalVal.(map[string]any)[k]
 			}
 		} else {
 			out[name] = finalVal
@@ -163,7 +163,7 @@ func (s *StructsUnpack) nested(val reflect.Value) interface{} {
 		if mapElem.Kind() == reflect.Struct ||
 			(mapElem.Kind() == reflect.Slice &&
 				mapElem.Elem().Kind() == reflect.Struct) {
-			m := make(DataUnit, val.Len())
+			m := make(map[string]any, val.Len())
 			for _, k := range val.MapKeys() {
 				m[k.String()] = s.nested(val.MapIndex(k))
 			}
