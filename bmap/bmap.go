@@ -20,7 +20,7 @@ type BMap struct {
 	rvalue reflect.Value
 }
 
-func Parse(data any, opts ...string) *BMap {
+func Parse(data any, opts ...string) BMap {
 	rv := reflect.ValueOf(data)
 	for rv.Kind() == reflect.Ptr || rv.Kind() == reflect.Interface {
 		rv = rv.Elem()
@@ -35,15 +35,15 @@ func Parse(data any, opts ...string) *BMap {
 		rv = reflect.ValueOf(jv)
 	default:
 	}
-	return &BMap{rvalue: rv}
+	return BMap{rvalue: rv}
 }
 
-func (bm *BMap) Get(key string) *BMap {
+func (bm BMap) Get(key string) BMap {
 	paths := strings.Split(key, ".")
 	curVal := bm.rvalue
 	for _, p := range paths {
 		if !curVal.IsValid() {
-			return &BMap{rvalue: reflect.Value{}}
+			return BMap{rvalue: reflect.Value{}}
 		}
 		switch curVal.Kind() {
 		case reflect.Ptr, reflect.Interface:
@@ -53,7 +53,7 @@ func (bm *BMap) Get(key string) *BMap {
 		case reflect.Map:
 			mv := curVal.MapIndex(reflect.ValueOf(p))
 			if !mv.IsValid() {
-				return &BMap{rvalue: reflect.Value{}}
+				return BMap{rvalue: reflect.Value{}}
 			}
 			curVal = mv
 		case reflect.Slice, reflect.Array:
@@ -61,18 +61,18 @@ func (bm *BMap) Get(key string) *BMap {
 				if idx >= 0 && idx < curVal.Len() {
 					curVal = curVal.Index(idx)
 				} else {
-					return &BMap{rvalue: reflect.Value{}}
+					return BMap{rvalue: reflect.Value{}}
 				}
 			} else {
-				return &BMap{rvalue: reflect.Value{}}
+				return BMap{rvalue: reflect.Value{}}
 			}
 		default:
-			return &BMap{rvalue: reflect.Value{}}
+			return BMap{rvalue: reflect.Value{}}
 		}
 	}
-	return &BMap{rvalue: curVal}
+	return BMap{rvalue: curVal}
 }
-func (bm *BMap) Set(key string, value any) *BMap {
+func (bm BMap) Set(key string, value any) BMap {
 	paths := strings.Split(key, ".")
 	if len(paths) == 0 {
 		return bm
@@ -170,14 +170,14 @@ func setValue(target reflect.Value, paths []string, value any) reflect.Value {
 	return target
 }
 
-func (bm *BMap) Value() any {
+func (bm BMap) Value() any {
 	if !bm.rvalue.IsValid() {
 		return nil
 	}
 	return bm.rvalue.Interface()
 }
 
-func (bm *BMap) Map() map[string]any {
+func (bm BMap) Map() map[string]any {
 	v, ok := bm.Value().(map[string]any)
 	if !ok {
 		return map[string]any{}
@@ -185,12 +185,12 @@ func (bm *BMap) Map() map[string]any {
 	return v
 }
 
-func (bm *BMap) IsArray() bool {
+func (bm BMap) IsArray() bool {
 	return bm.rvalue.Kind() == reflect.Slice || bm.rvalue.Kind() == reflect.Array
 }
 
-func (bm *BMap) Array() []*BMap {
-	var values []*BMap
+func (bm BMap) Array() []BMap {
+	var values []BMap
 	switch bm.rvalue.Kind() {
 	case reflect.Slice, reflect.Array:
 		for i := 0; i < bm.rvalue.Len(); i++ {
@@ -202,7 +202,7 @@ func (bm *BMap) Array() []*BMap {
 	return values
 }
 
-func (bm *BMap) String() string {
+func (bm BMap) String() string {
 	bv := bm.Value()
 	var value string
 	switch bm.rvalue.Kind() {
@@ -221,37 +221,37 @@ func (bm *BMap) String() string {
 	return value
 }
 
-func (bm *BMap) Int() int {
+func (bm BMap) Int() int {
 	var value int
 	value, _ = strconv.Atoi(bm.String())
 	return value
 }
 
-func (bm *BMap) Float() float64 {
+func (bm BMap) Float() float64 {
 	var value float64
 	value, _ = strconv.ParseFloat(bm.String(), 64)
 	return value
 }
 
-func (bm *BMap) Int64() int64 {
+func (bm BMap) Int64() int64 {
 	var value int64
 	value, _ = strconv.ParseInt(bm.String(), 10, 64)
 	return value
 }
 
-func (bm *BMap) Bool() bool {
+func (bm BMap) Bool() bool {
 	var value bool
 	value, _ = strconv.ParseBool(bm.String())
 	return value
 }
 
-func (bm *BMap) TimeFormat(format string) time.Time {
+func (bm BMap) TimeFormat(format string) time.Time {
 	var value time.Time
 	value, _ = time.Parse(format, bm.String())
 	return value
 }
 
-func (bm *BMap) Time() time.Time {
+func (bm BMap) Time() time.Time {
 	var value time.Time
 	var err error
 	str := bm.String()
