@@ -191,12 +191,7 @@ func (s *Dataer) HasOne(input *bmap.BMap, this_key, relation string) *Dataer {
 			iv := input.Get(_relatin_first)
 			s.HasOne(iv, w_key, relation)
 		} else {
-
 			//最后一个，直接比较
-			// var match_v *bmap.BMap
-			// SliceFind(s.SubGroup.Array(), &match_v, func(sv *bmap.BMap) bool {
-			// 	return s.CF(iv, sv)
-			// })
 			match_v := dvap.NewSlicer(s.SubGroup.Array()).Take(func(b *bmap.BMap) bool {
 				return s.CF(iv, b)
 			})
@@ -205,7 +200,6 @@ func (s *Dataer) HasOne(input *bmap.BMap, this_key, relation string) *Dataer {
 			}
 
 			if s.Smf != nil {
-				// _meta, _match_v := s.Smf(gjson.Parse(s.Meta), match_v)
 				_iv, _match_v := s.Smf(iv, match_v)
 
 				// 先把对应的 数组的元素父值替换掉
@@ -213,10 +207,8 @@ func (s *Dataer) HasOne(input *bmap.BMap, this_key, relation string) *Dataer {
 					s.Meta = _iv
 				} else {
 					_iv_key := this_key
-					// s.Meta, _ = sjson.Set(s.Meta, _iv_key, _iv.Value())
 					s.Meta = s.Meta.Set(_iv_key, _iv.Value())
 				}
-				// s.Meta = _meta.String()
 				match_v = _match_v
 			}
 
@@ -248,12 +240,9 @@ func (s *Dataer) HasMany(input *bmap.BMap, this_key, relation string) *Dataer {
 			} else {
 				w_key = fmt.Sprintf("%s.%d.%s", this_key, k, _relatin_first)
 			}
-
-			// fmt.Println(k)
 			if len(relations) > 1 {
 				meta := iv.Get(_relatin_first)
 				relation = strings.TrimPrefix(relation, fmt.Sprintf("%s|", _relatin_first))
-
 				s.HasMany(meta, w_key, relation)
 			} else {
 				// meta := iv
@@ -304,7 +293,6 @@ func (s *Dataer) HasMany(input *bmap.BMap, this_key, relation string) *Dataer {
 			for _, sv := range s.SubGroup.Array() {
 				if s.CF(iv, sv) {
 					if s.Smf != nil {
-						// _meta, _sv := s.Smf(gjson.Parse(s.Meta), sv)
 						_iv, _sv := s.Smf(iv, sv)
 
 						// 先把对应的 数组的元素父值替换掉
@@ -312,7 +300,6 @@ func (s *Dataer) HasMany(input *bmap.BMap, this_key, relation string) *Dataer {
 							s.Meta = _iv
 						} else {
 							_iv_key := this_key
-							// s.Meta, _ = sjson.Set(s.Meta, _iv_key, _iv.Value())
 							s.Meta = s.Meta.Set(_iv_key, _iv.Value())
 						}
 
@@ -324,7 +311,6 @@ func (s *Dataer) HasMany(input *bmap.BMap, this_key, relation string) *Dataer {
 				}
 			}
 
-			// s.Meta, _ = sjson.Set(s.Meta, w_key, filter)
 			s.Meta = s.Meta.Set(w_key, filter)
 		}
 
