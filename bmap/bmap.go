@@ -72,6 +72,11 @@ func (bm *BMap) Get(key string) *BMap {
 	}
 	return &BMap{rvalue: curVal}
 }
+
+func (bm *BMap) IsExists() bool {
+	return bm.rvalue.IsValid()
+}
+
 func (bm *BMap) Set(key string, value any) *BMap {
 	paths := strings.Split(key, ".")
 	if len(paths) == 0 {
@@ -113,8 +118,7 @@ func setValue(target reflect.Value, paths []string, value any) reflect.Value {
 			target = reflect.ValueOf(tv)
 		}
 
-		// 判断长度
-		// 如果数组长度不够，需要填充null值到idx
+		// 判断长度 如果数组长度不够，需要填充null值到idx
 		if idx >= 0 && idx < target.Len() {
 			// target.Index(idx).Set(reflect.ValueOf(value))
 		} else {
@@ -126,9 +130,9 @@ func setValue(target reflect.Value, paths []string, value any) reflect.Value {
 				target = reflect.Append(target, zeroVal)
 				l++
 			}
+			// target.Index(idx).Set(reflect.ValueOf(value))
 		}
 		if len(paths) == 1 {
-			// 设置值
 			target.Index(idx).Set(reflect.ValueOf(value))
 		} else {
 			next := target.Index(idx)
@@ -138,7 +142,6 @@ func setValue(target reflect.Value, paths []string, value any) reflect.Value {
 		}
 
 	} else {
-		// 判断类型，如果不是 map[string]any，则转换复制
 		if target.Type() != reflect.TypeOf(map[string]any{}) {
 			tv := make(map[string]any)
 
