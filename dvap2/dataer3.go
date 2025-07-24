@@ -161,8 +161,7 @@ func (s *Dataer) HasOne(input *bmap.BMap, this_key, relation string) *Dataer {
 						_iv_key = fmt.Sprintf("%d", k)
 					}
 
-					s.Meta = s.Meta.Set(_iv_key, _iv.Value())
-					// s.Meta, _ = sjson.Set(s.Meta, _iv_key, _iv.Value())
+					s.Meta.Set(_iv_key, _iv.Value())
 
 					// s.Meta = _meta.String()
 				}
@@ -170,8 +169,7 @@ func (s *Dataer) HasOne(input *bmap.BMap, this_key, relation string) *Dataer {
 				// fmt.Println(w_key)
 				// fmt.Println(match_v.String())
 
-				// s.Meta = VSSetV(s.Meta, match_v.Value(), w_key)
-				s.Meta = s.Meta.Set(w_key, match_v.Value())
+				s.Meta.Set(w_key, match_v.Value())
 
 				// fmt.Println(match_v.String())
 			}
@@ -207,7 +205,7 @@ func (s *Dataer) HasOne(input *bmap.BMap, this_key, relation string) *Dataer {
 					s.Meta = _iv
 				} else {
 					_iv_key := this_key
-					s.Meta = s.Meta.Set(_iv_key, _iv.Value())
+					s.Meta.Set(_iv_key, _iv.Value())
 				}
 				match_v = _match_v
 			}
@@ -215,7 +213,7 @@ func (s *Dataer) HasOne(input *bmap.BMap, this_key, relation string) *Dataer {
 			// fmt.Println(w_key)
 			// fmt.Println(match_v.String())
 			// s.Meta = VSSetV(s.Meta, match_v.Value(), w_key)
-			s.Meta = s.Meta.Set(w_key, match_v.Value())
+			s.Meta.Set(w_key, match_v.Value())
 		}
 
 	}
@@ -259,7 +257,7 @@ func (s *Dataer) HasMany(input *bmap.BMap, this_key, relation string) *Dataer {
 
 							iv = _iv
 							// s.Meta, _ = sjson.Set(s.Meta, _iv_key, _iv.Value())
-							s.Meta = s.Meta.Set(_iv_key, _iv.Value())
+							s.Meta.Set(_iv_key, _iv.Value())
 
 							filter = append(filter, _sv.Value())
 						} else {
@@ -269,7 +267,7 @@ func (s *Dataer) HasMany(input *bmap.BMap, this_key, relation string) *Dataer {
 				}
 
 				// s.Meta, _ = sjson.Set(s.Meta, w_key, filter)
-				s.Meta = s.Meta.Set(w_key, filter)
+				s.Meta.Set(w_key, filter)
 			}
 
 		}
@@ -300,7 +298,7 @@ func (s *Dataer) HasMany(input *bmap.BMap, this_key, relation string) *Dataer {
 							s.Meta = _iv
 						} else {
 							_iv_key := this_key
-							s.Meta = s.Meta.Set(_iv_key, _iv.Value())
+							s.Meta.Set(_iv_key, _iv.Value())
 						}
 
 						// s.Meta = _meta.String()
@@ -311,7 +309,7 @@ func (s *Dataer) HasMany(input *bmap.BMap, this_key, relation string) *Dataer {
 				}
 			}
 
-			s.Meta = s.Meta.Set(w_key, filter)
+			s.Meta.Set(w_key, filter)
 		}
 
 	}
