@@ -141,11 +141,18 @@ func setValue(target reflect.Value, paths []string, value any) reflect.Value {
 		// 判断类型，如果不是 map[string]any，则转换复制
 		if target.Type() != reflect.TypeOf(map[string]any{}) {
 			tv := make(map[string]any)
-			if ori_target_kind == reflect.Map {
+
+			// 只有map或者slice类型，才需要复制数据
+			switch ori_target_kind {
+			case reflect.Map:
 				for _, key := range target.MapKeys() {
 					tv[fmt.Sprint(key.Interface())] = target.MapIndex(key).Interface()
 				}
+			case reflect.Slice, reflect.Array:
+				unp := NewStructsUnpack(target.Interface())
+				tv = unp.Map()
 			}
+
 			target = reflect.ValueOf(tv)
 		}
 
