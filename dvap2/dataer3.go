@@ -28,7 +28,7 @@ type Dataer struct {
 
 // SetMeta 设置要操作的原始数据即父数据 (json 字符串)
 func (d *Dataer) SetMeta(meta bmap.BMap) *Dataer {
-	d.Meta = bmap.Parse(meta)
+	d.Meta = meta
 	return d
 }
 
