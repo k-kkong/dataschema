@@ -320,7 +320,7 @@ func (r *RelationLoader) load(db *gorm.DB) {
 		rv_rv := bmap.Parse(rv.result) //子集
 		// dataer := NewDataer(r_rv.String(), rv.compareFunc, rv.subModifyFunc, rv_rv)
 		dataer := NewDataer().
-			SetMeta(r_rv.String()).
+			SetMeta(r_rv).
 			SetCompareFunc(rv.compareFunc).
 			SetSubModifyFunc(rv.subModifyFunc).
 			SetSubGroup(rv_rv)

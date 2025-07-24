@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/k-kkong/dataschema/bmap"
+	"github.com/k-kkong/dataschema/dvap"
 	// "github.com/tidwall/gjson"
 	// "github.com/tidwall/sjson"
 )
@@ -138,9 +139,12 @@ func (s *Dataer) HasOne(input *bmap.BMap, this_key, relation string) *Dataer {
 			} else {
 				meta := iv
 				//最后一个，直接比较
-				var match_v *bmap.BMap
-				SliceFind(s.SubGroup.Array(), &match_v, func(sv *bmap.BMap) bool {
-					return s.CF(meta, sv)
+				// var match_v *bmap.BMap
+				// SliceFind(s.SubGroup.Array(), &match_v, func(sv *bmap.BMap) bool {
+				// 	return s.CF(meta, sv)
+				// })
+				match_v := dvap.NewSlicer(s.SubGroup.Array()).Take(func(b *bmap.BMap) bool {
+					return s.CF(meta, b)
 				})
 
 				if s.Smf != nil {
@@ -186,9 +190,12 @@ func (s *Dataer) HasOne(input *bmap.BMap, this_key, relation string) *Dataer {
 		} else {
 
 			//最后一个，直接比较
-			var match_v *bmap.BMap
-			SliceFind(s.SubGroup.Array(), &match_v, func(sv *bmap.BMap) bool {
-				return s.CF(iv, sv)
+			// var match_v *bmap.BMap
+			// SliceFind(s.SubGroup.Array(), &match_v, func(sv *bmap.BMap) bool {
+			// 	return s.CF(iv, sv)
+			// })
+			match_v := dvap.NewSlicer(s.SubGroup.Array()).Take(func(b *bmap.BMap) bool {
+				return s.CF(iv, b)
 			})
 
 			if s.Smf != nil {
