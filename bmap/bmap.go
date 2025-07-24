@@ -20,14 +20,16 @@ type BMap struct {
 	rvalue reflect.Value
 }
 
-func Parse(data any) *BMap {
+func Parse(data any, opts ...string) *BMap {
 	rv := reflect.ValueOf(data)
 	for rv.Kind() == reflect.Ptr || rv.Kind() == reflect.Interface {
 		rv = rv.Elem()
 	}
 	switch rv.Kind() {
 	case reflect.Struct:
-		rv = reflect.ValueOf(NewStructsUnpack(data).Map())
+		unpk := NewStructsUnpack(data)
+		unpk.TagName = "json"
+		rv = reflect.ValueOf(unpk.Map())
 	case reflect.String:
 		jv := gjson.Parse(data.(string)).Value()
 		rv = reflect.ValueOf(jv)
@@ -183,19 +185,19 @@ func (bm *BMap) Map() map[string]any {
 	return v
 }
 
-func (bm *BMap) IsArrsy() bool {
+func (bm *BMap) IsArray() bool {
 	return bm.rvalue.Kind() == reflect.Slice || bm.rvalue.Kind() == reflect.Array
 }
 
-func (bm *BMap) Array() []BMap {
-	var values []BMap
+func (bm *BMap) Array() []*BMap {
+	var values []*BMap
 	switch bm.rvalue.Kind() {
 	case reflect.Slice, reflect.Array:
 		for i := 0; i < bm.rvalue.Len(); i++ {
-			values = append(values, *Parse(bm.rvalue.Index(i).Interface()))
+			values = append(values, Parse(bm.rvalue.Index(i).Interface()))
 		}
 	default:
-		values = append(values, *bm)
+		values = append(values, bm)
 	}
 	return values
 }
