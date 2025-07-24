@@ -5,8 +5,8 @@ import (
 	"strings"
 
 	"github.com/k-kkong/dataschema/bmap"
-	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
+	// "github.com/tidwall/gjson"
+	// "github.com/tidwall/sjson"
 )
 
 type SubModifyFunc func(p, s *bmap.BMap) (*bmap.BMap, *bmap.BMap)
@@ -19,15 +19,15 @@ type Dataer struct {
 	Smf      SubModifyFunc
 	SubGroup *bmap.BMap
 
-	Meta string //原始数据
+	Meta *bmap.BMap //原始数据
 
 	Keys    []string        //key
 	Keysunq map[string]bool //去重
 }
 
 // SetMeta 设置要操作的原始数据即父数据 (json 字符串)
-func (d *Dataer) SetMeta(meta string) *Dataer {
-	d.Meta = meta
+func (d *Dataer) SetMeta(meta any) *Dataer {
+	d.Meta = bmap.Parse(meta)
 	return d
 }
 
@@ -59,8 +59,8 @@ func NewDataer() *Dataer {
 }
 
 // GetResult 获取最终结果
-func (d *Dataer) GetResult() interface{} {
-	return gjson.Parse(d.Meta).Value()
+func (d *Dataer) GetResult() any {
+	return d.Meta.Value()
 }
 
 // GetKeys 获取原属数据中 指定深度的key值，最终会得到一个数组
@@ -153,7 +153,9 @@ func (s *Dataer) HasOne(input *bmap.BMap, this_key, relation string) *Dataer {
 					if this_key == "" {
 						_iv_key = fmt.Sprintf("%d", k)
 					}
-					s.Meta, _ = sjson.Set(s.Meta, _iv_key, _iv.Value())
+
+					s.Meta = s.Meta.Set(_iv_key, _iv.Value())
+					// s.Meta, _ = sjson.Set(s.Meta, _iv_key, _iv.Value())
 
 					// s.Meta = _meta.String()
 				}
@@ -161,7 +163,9 @@ func (s *Dataer) HasOne(input *bmap.BMap, this_key, relation string) *Dataer {
 				// fmt.Println(w_key)
 				// fmt.Println(match_v.String())
 
-				s.Meta = VSSetV(s.Meta, match_v.Value(), w_key)
+				// s.Meta = VSSetV(s.Meta, match_v.Value(), w_key)
+				s.Meta = s.Meta.Set(w_key, match_v.Value())
+
 				// fmt.Println(match_v.String())
 			}
 
@@ -193,10 +197,11 @@ func (s *Dataer) HasOne(input *bmap.BMap, this_key, relation string) *Dataer {
 
 				// 先把对应的 数组的元素父值替换掉
 				if this_key == "" {
-					s.Meta = _iv.String()
+					s.Meta = _iv
 				} else {
 					_iv_key := this_key
-					s.Meta, _ = sjson.Set(s.Meta, _iv_key, _iv.Value())
+					// s.Meta, _ = sjson.Set(s.Meta, _iv_key, _iv.Value())
+					s.Meta = s.Meta.Set(_iv_key, _iv.Value())
 				}
 				// s.Meta = _meta.String()
 				match_v = _match_v
@@ -204,7 +209,8 @@ func (s *Dataer) HasOne(input *bmap.BMap, this_key, relation string) *Dataer {
 
 			// fmt.Println(w_key)
 			// fmt.Println(match_v.String())
-			s.Meta = VSSetV(s.Meta, match_v.Value(), w_key)
+			// s.Meta = VSSetV(s.Meta, match_v.Value(), w_key)
+			s.Meta = s.Meta.Set(w_key, match_v.Value())
 		}
 
 	}
@@ -250,7 +256,8 @@ func (s *Dataer) HasMany(input *bmap.BMap, this_key, relation string) *Dataer {
 							}
 
 							iv = _iv
-							s.Meta, _ = sjson.Set(s.Meta, _iv_key, _iv.Value())
+							// s.Meta, _ = sjson.Set(s.Meta, _iv_key, _iv.Value())
+							s.Meta = s.Meta.Set(_iv_key, _iv.Value())
 
 							filter = append(filter, _sv.Value())
 						} else {
@@ -259,7 +266,8 @@ func (s *Dataer) HasMany(input *bmap.BMap, this_key, relation string) *Dataer {
 					}
 				}
 
-				s.Meta, _ = sjson.Set(s.Meta, w_key, filter)
+				// s.Meta, _ = sjson.Set(s.Meta, w_key, filter)
+				s.Meta = s.Meta.Set(w_key, filter)
 			}
 
 		}
@@ -288,10 +296,11 @@ func (s *Dataer) HasMany(input *bmap.BMap, this_key, relation string) *Dataer {
 
 						// 先把对应的 数组的元素父值替换掉
 						if this_key == "" {
-							s.Meta = _iv.String()
+							s.Meta = _iv
 						} else {
 							_iv_key := this_key
-							s.Meta, _ = sjson.Set(s.Meta, _iv_key, _iv.Value())
+							// s.Meta, _ = sjson.Set(s.Meta, _iv_key, _iv.Value())
+							s.Meta = s.Meta.Set(_iv_key, _iv.Value())
 						}
 
 						// s.Meta = _meta.String()
@@ -302,7 +311,8 @@ func (s *Dataer) HasMany(input *bmap.BMap, this_key, relation string) *Dataer {
 				}
 			}
 
-			s.Meta, _ = sjson.Set(s.Meta, w_key, filter)
+			// s.Meta, _ = sjson.Set(s.Meta, w_key, filter)
+			s.Meta = s.Meta.Set(w_key, filter)
 		}
 
 	}
