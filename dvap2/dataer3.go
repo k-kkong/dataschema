@@ -5,7 +5,7 @@ import (
 	"strings"
 
 	"github.com/k-kkong/dataschema/bmap"
-	"github.com/k-kkong/dataschema/dvap"
+	// "github.com/k-kkong/dataschema/dvap"
 	// "github.com/tidwall/gjson"
 	// "github.com/tidwall/sjson"
 )
@@ -143,7 +143,7 @@ func (s *Dataer) HasOne(input *bmap.BMap, this_key, relation string) *Dataer {
 				// SliceFind(s.SubGroup.Array(), &match_v, func(sv *bmap.BMap) bool {
 				// 	return s.CF(meta, sv)
 				// })
-				match_v := dvap.NewSlicer(s.SubGroup.Array()).Take(func(b *bmap.BMap) bool {
+				match_v := NewSlicer(s.SubGroup.Array()).Take(func(b *bmap.BMap) bool {
 					return s.CF(meta, b)
 				})
 				if match_v == nil {
@@ -190,7 +190,7 @@ func (s *Dataer) HasOne(input *bmap.BMap, this_key, relation string) *Dataer {
 			s.HasOne(iv, w_key, relation)
 		} else {
 			//最后一个，直接比较
-			match_v := dvap.NewSlicer(s.SubGroup.Array()).Take(func(b *bmap.BMap) bool {
+			match_v := NewSlicer(s.SubGroup.Array()).Take(func(b *bmap.BMap) bool {
 				return s.CF(iv, b)
 			})
 			if match_v == nil {

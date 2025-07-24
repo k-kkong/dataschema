@@ -1,10 +1,23 @@
 package bmap
 
 import (
+	"encoding/json"
 	"fmt"
 	"reflect"
 	"strings"
+
+	"github.com/tidwall/gjson"
 )
+
+// 判断类型是否实现 json.Marshaler
+func implementsJSONMarshaler(t reflect.Type) bool {
+	if t == nil {
+		return false
+	}
+	jsonMarshalerType := reflect.TypeOf((*json.Marshaler)(nil)).Elem()
+	return t.Implements(jsonMarshalerType) ||
+		reflect.PtrTo(t).Implements(jsonMarshalerType)
+}
 
 type StructsUnpack struct {
 	raw     any
@@ -135,16 +148,22 @@ func (s *StructsUnpack) nested(val reflect.Value) interface{} {
 
 	switch v.Kind() {
 	case reflect.Struct:
-		n := NewStructsUnpack(val.Interface())
-		n.TagName = s.TagName
-		m := n.Map()
 
-		// do not add the converted value if there are no exported fields, ie:
-		// time.Time
-		if len(m) == 0 {
-			finalVal = val.Interface()
+		if implementsJSONMarshaler(v.Type()) {
+			b, _ := json.Marshal(val.Interface())
+			finalVal = gjson.ParseBytes(b).Value()
 		} else {
-			finalVal = m
+			n := NewStructsUnpack(val.Interface())
+			n.TagName = s.TagName
+			m := n.Map()
+
+			// do not add the converted value if there are no exported fields, ie:
+			// time.Time
+			if len(m) == 0 {
+				finalVal = val.Interface()
+			} else {
+				finalVal = m
+			}
 		}
 	case reflect.Map:
 		// get the element type of the map
