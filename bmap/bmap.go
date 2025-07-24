@@ -185,6 +185,11 @@ func (bm *BMap) Value() any {
 	if !bm.rvalue.IsValid() {
 		return nil
 	}
+
+	for bm.rvalue.Kind() == reflect.Ptr || bm.rvalue.Kind() == reflect.Interface {
+		bm.rvalue = bm.rvalue.Elem()
+	}
+
 	return bm.rvalue.Interface()
 }
 
