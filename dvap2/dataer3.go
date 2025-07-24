@@ -10,24 +10,24 @@ import (
 	// "github.com/tidwall/sjson"
 )
 
-type SubModifyFunc func(p, s bmap.BMap) (bmap.BMap, bmap.BMap)
+type SubModifyFunc func(p, s *bmap.BMap) (*bmap.BMap, *bmap.BMap)
 
-type CompareFun func(p, s bmap.BMap) bool
+type CompareFun func(p, s *bmap.BMap) bool
 
 // Dataer 数据连和处理者
 type Dataer struct {
 	CF       CompareFun
 	Smf      SubModifyFunc
-	SubGroup bmap.BMap
+	SubGroup *bmap.BMap
 
-	Meta bmap.BMap //原始数据
+	Meta *bmap.BMap //原始数据
 
 	Keys    []string        //key
 	Keysunq map[string]bool //去重
 }
 
 // SetMeta 设置要操作的原始数据即父数据 (json 字符串)
-func (d *Dataer) SetMeta(meta bmap.BMap) *Dataer {
+func (d *Dataer) SetMeta(meta *bmap.BMap) *Dataer {
 	d.Meta = meta
 	return d
 }
@@ -45,7 +45,7 @@ func (d *Dataer) SetSubModifyFunc(smf SubModifyFunc) *Dataer {
 }
 
 // SetSubGroup 设置子数据
-func (d *Dataer) SetSubGroup(subGroup bmap.BMap) *Dataer {
+func (d *Dataer) SetSubGroup(subGroup *bmap.BMap) *Dataer {
 	d.SubGroup = subGroup
 	return d
 }
@@ -65,9 +65,9 @@ func (d *Dataer) GetResult() any {
 }
 
 // GetKeys 获取原属数据中 指定深度的key值，最终会得到一个数组
-// - input bmap.BMap 原始数据
+// - input *bmap.BMap 原始数据
 // - dig_key string  要获取的key的深度参数 比如  body|bar 代表获取 input的body下的bar 的值列表
-func (d *Dataer) GetKeys(input bmap.BMap, dig_key string) *Dataer {
+func (d *Dataer) GetKeys(input *bmap.BMap, dig_key string) *Dataer {
 
 	relations := strings.Split(dig_key, "|")
 	var _relatin_first = relations[0]
@@ -114,7 +114,7 @@ func (d *Dataer) GetKeys(input bmap.BMap, dig_key string) *Dataer {
 }
 
 // HasOne 将subdata arry 中符合条件的单个元素，加入到parent 指定位置中
-func (s *Dataer) HasOne(input bmap.BMap, this_key, relation string) *Dataer {
+func (s *Dataer) HasOne(input *bmap.BMap, this_key, relation string) *Dataer {
 
 	relations := strings.Split(relation, "|")
 	var _relatin_first = relations[0]
@@ -139,13 +139,16 @@ func (s *Dataer) HasOne(input bmap.BMap, this_key, relation string) *Dataer {
 			} else {
 				meta := iv
 				//最后一个，直接比较
-				// var match_v bmap.BMap
-				// SliceFind(s.SubGroup.Array(), &match_v, func(sv bmap.BMap) bool {
+				// var match_v *bmap.BMap
+				// SliceFind(s.SubGroup.Array(), &match_v, func(sv *bmap.BMap) bool {
 				// 	return s.CF(meta, sv)
 				// })
-				match_v := dvap.NewSlicer(s.SubGroup.Array()).Take(func(b bmap.BMap) bool {
+				match_v := dvap.NewSlicer(s.SubGroup.Array()).Take(func(b *bmap.BMap) bool {
 					return s.CF(meta, b)
 				})
+				if match_v == nil {
+					match_v = &bmap.BMap{}
+				}
 
 				if s.Smf != nil {
 
@@ -190,13 +193,16 @@ func (s *Dataer) HasOne(input bmap.BMap, this_key, relation string) *Dataer {
 		} else {
 
 			//最后一个，直接比较
-			// var match_v bmap.BMap
-			// SliceFind(s.SubGroup.Array(), &match_v, func(sv bmap.BMap) bool {
+			// var match_v *bmap.BMap
+			// SliceFind(s.SubGroup.Array(), &match_v, func(sv *bmap.BMap) bool {
 			// 	return s.CF(iv, sv)
 			// })
-			match_v := dvap.NewSlicer(s.SubGroup.Array()).Take(func(b bmap.BMap) bool {
+			match_v := dvap.NewSlicer(s.SubGroup.Array()).Take(func(b *bmap.BMap) bool {
 				return s.CF(iv, b)
 			})
+			if match_v == nil {
+				match_v = &bmap.BMap{}
+			}
 
 			if s.Smf != nil {
 				// _meta, _match_v := s.Smf(gjson.Parse(s.Meta), match_v)
@@ -227,7 +233,7 @@ func (s *Dataer) HasOne(input bmap.BMap, this_key, relation string) *Dataer {
 }
 
 // HasMany 将subdata arry 中符合条件的多个元素，加入到parent 指定位置中
-func (s *Dataer) HasMany(input bmap.BMap, this_key, relation string) *Dataer {
+func (s *Dataer) HasMany(input *bmap.BMap, this_key, relation string) *Dataer {
 
 	relations := strings.Split(relation, "|")
 	var _relatin_first = relations[0]

@@ -187,7 +187,7 @@ func (r *RelationLoader) AddRelationWithOptions(opt *RelationOptions) *RelationL
 // Child 子数据表的模型model
 // compareFunc 自定义比较函数 用于连接父数据和子数据的关键判断 非必填
 // cdb 自定义查询子数据的条件db 非必填
-// anonps 自定义父子数据修改，在连接数据的时候会调用  func(p, s bmap.BMap) (bmap.BMap, bmap.BMap) 非必填
+// anonps 自定义父子数据修改，在连接数据的时候会调用  func(p, s *bmap.BMap) (*bmap.BMap, *bmap.BMap) 非必填
 func (r *RelationLoader) AddRelation(relation_type RELATION_TYPE, relation, fakey, sukey string,
 	Child interface{}, compareFunc CompareFun, cdb *gorm.DB, anonps ...interface{}) *RelationLoader {
 	var err error
@@ -203,7 +203,7 @@ func (r *RelationLoader) AddRelation(relation_type RELATION_TYPE, relation, fake
 			relation_type: relation_type,
 		}
 		if len(anonps) > 0 {
-			sf, ok := anonps[0].(func(p, s bmap.BMap) (bmap.BMap, bmap.BMap))
+			sf, ok := anonps[0].(func(p, s *bmap.BMap) (*bmap.BMap, *bmap.BMap))
 			if ok {
 				new_sr.subModifyFunc = sf
 			}
@@ -311,7 +311,7 @@ func (r *RelationLoader) load(db *gorm.DB) {
 
 		//生成结果
 		if rv.compareFunc == nil {
-			rv.compareFunc = func(p, s bmap.BMap) bool {
+			rv.compareFunc = func(p, s *bmap.BMap) bool {
 				return p.Get(rv.fakey).String() != "" && p.Get(rv.fakey).String() == s.Get(rv.sukey).String()
 			}
 		}
@@ -400,7 +400,7 @@ func (r *RelationOptions) SetCdb(cdb *gorm.DB) *RelationOptions {
 
 // SetSubModifyFunc 设置自定义父子数据修改
 // 该方法在 最终数据连接的时候执行，用于对父数据或者子数据自定义增加减少字段或者修改字段等，内容可高度自定义
-// subModifyFunc(p, s bmap.BMap) (bmap.BMap, bmap.BMap)
+// subModifyFunc(p, s *bmap.BMap) (*bmap.BMap, *bmap.BMap)
 // p是父数据 s是子数据 返回 p,s 父子数据，即内容可以自定义修改，但是不要丢失对应的映射key
 func (r *RelationOptions) SetSubModifyFunc(subModifyFunc SubModifyFunc) *RelationOptions {
 	r.SubModifyFunc = subModifyFunc
