@@ -82,6 +82,9 @@ func (bm *BMap) Set(key string, value any) *BMap {
 	if len(paths) == 0 {
 		return bm
 	}
+	if value == nil {
+		value = new(any)
+	}
 	// 设置值并获取结果，如果返回新值则更新
 	bm.rvalue = setValue(bm.rvalue, paths, value)
 	return bm
