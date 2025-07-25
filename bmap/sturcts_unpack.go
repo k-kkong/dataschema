@@ -105,7 +105,7 @@ func (s *StructsUnpack) FillMap(out map[string]any) {
 			continue
 		}
 
-		if isSubStruct && (tagOpts.Has("flatten")) {
+		if isSubStruct && (tagOpts.Has("flatten")) || field.Anonymous {
 			for k := range finalVal.(map[string]any) {
 				out[k] = finalVal.(map[string]any)[k]
 			}
