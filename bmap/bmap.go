@@ -37,7 +37,9 @@ func Parse(data any, opts ...string) *BMap {
 		rv = reflect.ValueOf(unpk.Unpack())
 	case reflect.String:
 		jv := gjson.Parse(data.(string)).Value()
-		rv = reflect.ValueOf(jv)
+		if jv != nil {
+			rv = reflect.ValueOf(jv)
+		}
 	default:
 	}
 	return &BMap{
@@ -140,7 +142,12 @@ func (bm *BMap) setValue(target reflect.Value, paths []string, value any) reflec
 	if idx, ok := isIntegerStr(paths[0]); ok {
 		// 判断类型，如果不是 []any，则转换复制
 		if target.Type() != reflect.TypeOf([]any{}) {
-			tv := make([]any, 0, target.Len())
+
+			var ltv = 1
+			if ori_target_kind == reflect.Slice {
+				ltv = target.Len()
+			}
+			tv := make([]any, 0, ltv)
 			// 如果是数据切片，则将数据复制到新的切片中，否则将其作为第一个元素
 			switch ori_target_kind {
 			case reflect.Slice, reflect.Array:
