@@ -17,38 +17,47 @@ func isIntegerStr(s string) (int, bool) {
 }
 
 type BMap struct {
-	rvalue reflect.Value
+	rvalue  reflect.Value
+	TagName string
 }
 
 func Parse(data any, opts ...string) *BMap {
+	var tagname = "json"
+	if len(opts) > 0 {
+		tagname = opts[0]
+	}
+
 	rv := reflect.ValueOf(data)
 	for rv.Kind() == reflect.Ptr || rv.Kind() == reflect.Interface {
 		rv = rv.Elem()
 	}
 	switch rv.Kind() {
 	case reflect.Struct:
-		unpk := NewStructsUnpack(data)
-		unpk.TagName = "json"
-		rv = reflect.ValueOf(unpk.Map())
+		unpk := NewStructUnpack(data, tagname)
+		rv = reflect.ValueOf(unpk.Unpack())
 	case reflect.String:
 		jv := gjson.Parse(data.(string)).Value()
 		rv = reflect.ValueOf(jv)
 	default:
 	}
-	return &BMap{rvalue: rv}
+	return &BMap{
+		rvalue:  rv,
+		TagName: tagname,
+	}
 }
 
 func (bm *BMap) Get(key string) *BMap {
 	paths := strings.Split(key, ".")
 	curVal := bm.rvalue
 	for _, p := range paths {
+
+		for curVal.Kind() == reflect.Ptr || curVal.Kind() == reflect.Interface {
+			curVal = curVal.Elem()
+		}
 		if !curVal.IsValid() {
 			return &BMap{rvalue: reflect.Value{}}
 		}
-		switch curVal.Kind() {
-		case reflect.Ptr, reflect.Interface:
-			curVal = curVal.Elem()
-		}
+
 		switch curVal.Kind() {
 		case reflect.Map:
 			mv := curVal.MapIndex(reflect.ValueOf(p))
@@ -66,6 +75,29 @@ func (bm *BMap) Get(key string) *BMap {
 			} else {
 				return &BMap{rvalue: reflect.Value{}}
 			}
+		case reflect.Struct:
+			unpkg := NewStructUnpack(curVal.Interface(), bm.TagName).Unpack()
+			unpkgv := reflect.ValueOf(unpkg)
+			for unpkgv.Kind() == reflect.Ptr || unpkgv.Kind() == reflect.Interface {
+				unpkgv = unpkgv.Elem()
+			}
+			switch unpkgv.Kind() {
+			case reflect.Map:
+				curVal = unpkgv.MapIndex(reflect.ValueOf(p))
+			case reflect.Slice, reflect.Array:
+				if idx, ok := isIntegerStr(p); ok {
+					if idx >= 0 && idx < unpkgv.Len() {
+						curVal = unpkgv.Index(idx)
+					} else {
+						return &BMap{rvalue: reflect.Value{}}
+					}
+				} else {
+					return &BMap{rvalue: reflect.Value{}}
+				}
+			default:
+				return &BMap{rvalue: reflect.Value{}}
+			}
+
 		default:
 			return &BMap{rvalue: reflect.Value{}}
 		}
@@ -86,11 +118,11 @@ func (bm *BMap) Set(key string, value any) *BMap {
 		value = new(any)
 	}
 	// 设置值并获取结果，如果返回新值则更新
-	bm.rvalue = setValue(bm.rvalue, paths, value)
+	bm.rvalue = bm.setValue(bm.rvalue, paths, value)
 	return bm
 }
 
-func setValue(target reflect.Value, paths []string, value any) reflect.Value {
+func (bm *BMap) setValue(target reflect.Value, paths []string, value any) reflect.Value {
 
 	for target.Kind() == reflect.Ptr || target.Kind() == reflect.Interface {
 		target = target.Elem()
@@ -140,7 +172,7 @@ func setValue(target reflect.Value, paths []string, value any) reflect.Value {
 		} else {
 			next := target.Index(idx)
 			// fmt.Println(next.Interface())
-			nextv := setValue(next, paths[1:], value)
+			nextv := bm.setValue(next, paths[1:], value)
 			target.Index(idx).Set(nextv)
 		}
 
@@ -156,8 +188,12 @@ func setValue(target reflect.Value, paths []string, value any) reflect.Value {
 				}
 			case reflect.Struct:
 				// reflect.Slice, reflect.Array
-				unp := NewStructsUnpack(target.Interface())
-				tv = unp.Map()
+				unpv := NewStructUnpack(target.Interface(), bm.TagName).Unpack()
+				var suc bool
+				tv, suc = unpv.(map[string]any)
+				if !suc {
+					tv = map[string]any{}
+				}
 			}
 
 			target = reflect.ValueOf(tv)
@@ -177,7 +213,7 @@ func setValue(target reflect.Value, paths []string, value any) reflect.Value {
 					next = reflect.ValueOf(tv)
 				}
 			}
-			nextv := setValue(next, paths[1:], value)
+			nextv := bm.setValue(next, paths[1:], value)
 			target.SetMapIndex(reflect.ValueOf(paths[0]), nextv)
 		}
 	}
