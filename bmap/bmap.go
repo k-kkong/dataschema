@@ -307,9 +307,9 @@ func (bm *BMap) Bool() bool {
 	return value
 }
 
-func (bm *BMap) TimeFormat(format string) time.Time {
+func (bm *BMap) TimeLayout(layout string) time.Time {
 	var value time.Time
-	value, _ = time.Parse(format, bm.String())
+	value, _ = time.Parse(layout, bm.String())
 	return value
 }
 
@@ -326,6 +326,9 @@ func (bm *BMap) Time() time.Time {
 	}
 	if err != nil {
 		value, err = time.Parse(time.RFC3339Nano, str)
+	}
+	if err != nil {
+		value, err = time.Parse(`2006-01-02 15:04:05 -0700 MST`, str)
 	}
 	if err != nil {
 		value, _ = time.Parse(time.TimeOnly, str)
