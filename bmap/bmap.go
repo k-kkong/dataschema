@@ -236,7 +236,11 @@ func (bm *BMap) Value() any {
 		bm.rvalue = bm.rvalue.Elem()
 	}
 
-	return bm.rvalue.Interface()
+	if bm.rvalue.IsValid() {
+		return bm.rvalue.Interface()
+	}
+	return nil
+
 }
 
 func (bm *BMap) Map() map[string]any {
@@ -249,6 +253,9 @@ func (bm *BMap) Map() map[string]any {
 
 func (bm *BMap) IsArray() bool {
 	return bm.rvalue.Kind() == reflect.Slice || bm.rvalue.Kind() == reflect.Array
+}
+func (bm *BMap) IsNil() bool {
+	return bm.Value() == nil
 }
 
 func (bm *BMap) Array() []*BMap {
@@ -266,6 +273,9 @@ func (bm *BMap) Array() []*BMap {
 
 func (bm *BMap) String() string {
 	bv := bm.Value()
+	if bv == nil {
+		return ""
+	}
 	var value string
 	switch bm.rvalue.Kind() {
 	case reflect.Map, reflect.Slice, reflect.Array:
