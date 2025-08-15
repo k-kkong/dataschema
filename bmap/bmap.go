@@ -31,6 +31,8 @@ func Parse(data any, opts ...string) *BMap {
 	for rv.Kind() == reflect.Ptr || rv.Kind() == reflect.Interface {
 		rv = rv.Elem()
 	}
+	// k := rv.Kind()
+	// fmt.Println(k)
 	switch rv.Kind() {
 	case reflect.Struct:
 		unpk := NewStructUnpack(data, tagname)
@@ -39,6 +41,14 @@ func Parse(data any, opts ...string) *BMap {
 		jv := gjson.Parse(data.(string)).Value()
 		if jv != nil {
 			rv = reflect.ValueOf(jv)
+		}
+	case reflect.Slice, reflect.Array:
+		if rv.Kind() == reflect.Slice && rv.Type().Elem().Kind() == reflect.Uint8 {
+			// fmt.Println(string(rv.Bytes()))
+			jv := gjson.ParseBytes(rv.Bytes()).Value()
+			if jv != nil {
+				rv = reflect.ValueOf(jv)
+			}
 		}
 	default:
 	}
@@ -319,7 +329,7 @@ func (bm *BMap) Bool() bool {
 
 func (bm *BMap) TimeLayout(layout string) time.Time {
 	var value time.Time
-	value, _ = time.Parse(layout, bm.String())
+	value, _ = time.ParseInLocation(layout, bm.String(), time.Local)
 	return value
 }
 
@@ -327,63 +337,63 @@ func (bm *BMap) Time() time.Time {
 	var value time.Time
 	var err error
 	str := bm.String()
-	value, err = time.Parse(time.DateTime, str)
+	value, err = time.ParseInLocation(time.DateTime, str, time.Local)
 	if err != nil {
-		value, err = time.Parse(time.DateOnly, str)
+		value, err = time.ParseInLocation(time.DateOnly, str, time.Local)
 	}
 	if err != nil {
-		value, err = time.Parse(time.RFC3339, str)
+		value, err = time.ParseInLocation(time.RFC3339, str, time.Local)
 	}
 	if err != nil {
-		value, err = time.Parse(time.RFC3339Nano, str)
+		value, err = time.ParseInLocation(time.RFC3339Nano, str, time.Local)
 	}
 	if err != nil {
-		value, err = time.Parse(`2006-01-02 15:04:05 -0700 MST`, str)
+		value, err = time.ParseInLocation(`2006-01-02 15:04:05 -0700 MST`, str, time.Local)
 	}
 	if err != nil {
-		value, _ = time.Parse(time.TimeOnly, str)
+		value, _ = time.ParseInLocation(time.TimeOnly, str, time.Local)
 	}
 	if err != nil {
-		value, err = time.Parse(time.ANSIC, str)
+		value, err = time.ParseInLocation(time.ANSIC, str, time.Local)
 	}
 	if err != nil {
-		value, err = time.Parse(time.UnixDate, str)
+		value, err = time.ParseInLocation(time.UnixDate, str, time.Local)
 	}
 	if err != nil {
-		value, err = time.Parse(time.RubyDate, str)
+		value, err = time.ParseInLocation(time.RubyDate, str, time.Local)
 	}
 	if err != nil {
-		value, err = time.Parse(time.RFC822, str)
+		value, err = time.ParseInLocation(time.RFC822, str, time.Local)
 	}
 	if err != nil {
-		value, err = time.Parse(time.RFC822Z, str)
+		value, err = time.ParseInLocation(time.RFC822Z, str, time.Local)
 	}
 	if err != nil {
-		value, err = time.Parse(time.RFC850, str)
+		value, err = time.ParseInLocation(time.RFC850, str, time.Local)
 	}
 	if err != nil {
-		value, err = time.Parse(time.RFC1123, str)
+		value, err = time.ParseInLocation(time.RFC1123, str, time.Local)
 	}
 	if err != nil {
-		value, err = time.Parse(time.RFC1123Z, str)
+		value, err = time.ParseInLocation(time.RFC1123Z, str, time.Local)
 	}
 	if err != nil {
-		value, err = time.Parse(time.Kitchen, str)
+		value, err = time.ParseInLocation(time.Kitchen, str, time.Local)
 	}
 	if err != nil {
-		value, err = time.Parse(time.Stamp, str)
+		value, err = time.ParseInLocation(time.Stamp, str, time.Local)
 	}
 	if err != nil {
-		value, err = time.Parse(time.StampMilli, str)
+		value, err = time.ParseInLocation(time.StampMilli, str, time.Local)
 	}
 	if err != nil {
-		value, err = time.Parse(time.StampMicro, str)
+		value, err = time.ParseInLocation(time.StampMicro, str, time.Local)
 	}
 	if err != nil {
-		value, err = time.Parse(time.StampNano, str)
+		value, err = time.ParseInLocation(time.StampNano, str, time.Local)
 	}
 	if err != nil {
-		value, _ = time.Parse(time.Layout, str)
+		value, _ = time.ParseInLocation(time.Layout, str, time.Local)
 	}
 	return value
 }

@@ -1,7 +1,9 @@
 package dvap2
 
 import (
+	"fmt"
 	"math/rand"
+	"reflect"
 	"sort"
 	"sync"
 )
@@ -279,6 +281,46 @@ func (s *Slicer[T]) Sort(_f func(a, b T) bool) *Slicer[T] {
 	sort.Slice(s.data, func(i, j int) bool {
 		return _f(s.data[i], s.data[j])
 	})
+	return s
+}
+
+// SortByField 将指定字段值，按照所给顺序排序
+// _get_field_value 获取字段值
+// order 切片字段值顺序
+func (s *Slicer[T]) SortByField(_get_field_value func(T) any, order any) *Slicer[T] {
+
+	// sort := "desc"
+	// if len(sorts) > 0 {
+	// 	sort = sorts[0]
+	// }
+
+	// side := "head"
+	// if sort == "asc" {
+	// 	side = "tail"
+	// }
+
+	// s.data  是slice
+	var mapsort = map[string]int{}
+	orderv := reflect.ValueOf(order)
+	for i := 0; i < orderv.Len(); i++ {
+		mapsort[fmt.Sprint(orderv.Index(i).Interface())] = i
+	}
+
+	s.Sort(func(a, b T) bool {
+		av_k := fmt.Sprint(_get_field_value(a))
+		bv_k := fmt.Sprint(_get_field_value(b))
+
+		av_v, ok := mapsort[av_k]
+		if !ok {
+			av_v = 9999999999
+		}
+		bv_v, ok := mapsort[bv_k]
+		if !ok {
+			bv_v = 9999999999
+		}
+		return av_v < bv_v
+	})
+
 	return s
 }
 
