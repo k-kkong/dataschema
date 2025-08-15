@@ -269,11 +269,16 @@ func (bm *BMap) IsNil() bool {
 }
 
 func (bm *BMap) Array() []*BMap {
+	brv := bm.rvalue
+	for brv.Kind() == reflect.Ptr || brv.Kind() == reflect.Interface {
+		brv = brv.Elem()
+	}
+
 	var values []*BMap
-	switch bm.rvalue.Kind() {
+	switch brv.Kind() {
 	case reflect.Slice, reflect.Array:
-		for i := 0; i < bm.rvalue.Len(); i++ {
-			values = append(values, Parse(bm.rvalue.Index(i).Interface()))
+		for i := 0; i < brv.Len(); i++ {
+			values = append(values, Parse(brv.Index(i).Interface()))
 		}
 	default:
 		values = append(values, bm)
