@@ -298,6 +298,12 @@ func (bm *BMap) String() string {
 		value = string(b)
 	case reflect.String:
 		value = bv.(string)
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		value = strconv.FormatInt(bm.rvalue.Int(), 10)
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		value = strconv.FormatInt(int64(bm.rvalue.Uint()), 10)
+	case reflect.Float32, reflect.Float64:
+		value = strconv.FormatFloat(bm.rvalue.Float(), 'f', -1, 64)
 	default:
 		if t, ok := bv.(time.Time); ok {
 			value = t.Format(time.RFC3339)
@@ -309,20 +315,60 @@ func (bm *BMap) String() string {
 }
 
 func (bm *BMap) Int() int {
+
+	bv := bm.Value()
+	if bv == nil {
+		return 0
+	}
 	var value int
-	value, _ = strconv.Atoi(bm.String())
+	switch bm.rvalue.Kind() {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		value = int(bm.rvalue.Int())
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		value = int(bm.rvalue.Uint())
+	case reflect.Float32, reflect.Float64:
+		value = int(bm.rvalue.Float())
+	default:
+		value, _ = strconv.Atoi(bm.String())
+	}
 	return value
 }
 
 func (bm *BMap) Float() float64 {
+	bv := bm.Value()
+	if bv == nil {
+		return 0
+	}
 	var value float64
-	value, _ = strconv.ParseFloat(bm.String(), 64)
+	switch bm.rvalue.Kind() {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		value = float64(bm.rvalue.Int())
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		value = float64(bm.rvalue.Uint())
+	case reflect.Float32, reflect.Float64:
+		value = bm.rvalue.Float()
+	default:
+		value, _ = strconv.ParseFloat(bm.String(), 64)
+	}
 	return value
 }
 
 func (bm *BMap) Int64() int64 {
+	bv := bm.Value()
+	if bv == nil {
+		return 0
+	}
 	var value int64
-	value, _ = strconv.ParseInt(bm.String(), 10, 64)
+	switch bm.rvalue.Kind() {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		value = bm.rvalue.Int()
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		value = int64(bm.rvalue.Uint())
+	case reflect.Float32, reflect.Float64:
+		value = int64(bm.rvalue.Float())
+	default:
+		value, _ = strconv.ParseInt(bm.String(), 10, 64)
+	}
 	return value
 }
 
