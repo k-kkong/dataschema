@@ -7,8 +7,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/tidwall/gjson"
 )
 
 func isIntegerStr(s string) (int, bool) {
@@ -38,16 +36,18 @@ func Parse(data any, opts ...string) *BMap {
 		unpk := NewStructUnpack(data, tagname)
 		rv = reflect.ValueOf(unpk.Unpack())
 	case reflect.String:
-		jv := gjson.Parse(data.(string)).Value()
-		if jv != nil {
-			rv = reflect.ValueOf(jv)
+		var sv any
+		if json.Unmarshal([]byte(data.(string)), &sv) == nil {
+			rv = reflect.ValueOf(sv)
 		}
 	case reflect.Slice, reflect.Array:
-		if rv.Kind() == reflect.Slice && rv.Type().Elem().Kind() == reflect.Uint8 {
+		if (rv.Kind() == reflect.Slice || rv.Kind() == reflect.Array) &&
+			rv.Type().Elem().Kind() == reflect.Uint8 {
 			// fmt.Println(string(rv.Bytes()))
-			jv := gjson.ParseBytes(rv.Bytes()).Value()
-			if jv != nil {
-				rv = reflect.ValueOf(jv)
+			// fmt.Println(rv.Bytes())
+			var sv any
+			if json.Unmarshal(rv.Bytes(), &sv) == nil {
+				rv = reflect.ValueOf(sv)
 			}
 		}
 	default:
@@ -294,8 +294,14 @@ func (bm *BMap) String() string {
 	var value string
 	switch bm.rvalue.Kind() {
 	case reflect.Map, reflect.Slice, reflect.Array:
-		b, _ := json.Marshal(bv)
-		value = string(b)
+		// 如果是字节流数组
+		if (bm.rvalue.Kind() == reflect.Slice || bm.rvalue.Kind() == reflect.Array) &&
+			bm.rvalue.Type().Elem().Kind() == reflect.Uint8 {
+			value = string(bm.rvalue.Bytes())
+		} else {
+			b, _ := json.Marshal(bv)
+			value = string(b)
+		}
 	case reflect.String:
 		value = bv.(string)
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
