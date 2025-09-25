@@ -19,6 +19,11 @@ type BMap struct {
 	TagName string
 }
 
+// 实现json序列化方法
+func (t BMap) MarshalJSON() ([]byte, error) {
+	return []byte(t.String()), nil
+}
+
 func Parse(data any, opts ...string) *BMap {
 	var tagname = "json"
 	if len(opts) > 0 {

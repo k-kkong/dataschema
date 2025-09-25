@@ -1,4 +1,4 @@
-package dvap2
+package gslicer
 
 import (
 	"fmt"
@@ -27,6 +27,33 @@ func NewSlicer[T any](input []T, is_copy ...bool) *Slicer[T] {
 		v.data = input
 	}
 	return v
+}
+
+// Batch 将切片按指定大小分割
+func (s *Slicer[T]) Batch(size int) [][]T {
+	s.lock.Lock()
+	defer s.lock.Unlock()
+	var r = make([][]T, 0, len(s.data)/size+1)
+	for i := 0; i < len(s.data); i += size {
+		end := min(i+size, len(s.data))
+		r = append(r, s.data[i:end])
+	}
+	return r
+}
+
+// BatchForeach 分批处理
+// f 返回false时停止处理, f里的参数是分批后的切片
+func (s *Slicer[T]) BatchForeach(f func([]T) bool, size int) {
+	s.lock.Lock()
+	defer s.lock.Unlock()
+	// var r = make([][]T, 0, len(s.data)/size+1)
+	for i := 0; i < len(s.data); i += size {
+		end := min(i+size, len(s.data))
+		r := s.data[i:end]
+		if !f(r) {
+			break
+		}
+	}
 }
 
 func (s *Slicer[T]) Len() int {
