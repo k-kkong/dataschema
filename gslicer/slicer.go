@@ -56,6 +56,30 @@ func (s *Slicer[T]) BatchForeach(f func([]T) bool, size int) {
 	}
 }
 
+// Concurrency 并发处理
+// f 并发处理函数 , size 并发数量
+func (s *Slicer[T]) Concurrency(f func(T), size int) {
+	s.lock.Lock()
+	defer s.lock.Unlock()
+	if size <= 0 {
+		size = 1
+	}
+	var wg = &sync.WaitGroup{}
+	var limit = make(chan struct{}, size)
+	for _, v := range s.data {
+		wg.Add(1)
+		limit <- struct{}{}
+		go func(_v T) {
+			defer func() {
+				wg.Done()
+				<-limit
+			}()
+			f(_v)
+		}(v)
+	}
+	wg.Wait()
+}
+
 func (s *Slicer[T]) Len() int {
 	s.lock.Lock()
 	defer s.lock.Unlock()
