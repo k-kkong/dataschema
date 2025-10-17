@@ -244,17 +244,15 @@ func (r *RelationLoader) LoadResult(db *gorm.DB) *RelationLoader {
 	}
 	return r
 }
-
 func (r *RelationLoader) load(db *gorm.DB) {
-
 	input_v := r.input
 	r.result = r.input
-	//取key
-	var fakeys = map[string][]string{}
-	for rk, rv := range r.Stash {
 
+	//取key
+	var fakeys = make(map[string][]string, len(r.Stash))
+	for rk, rv := range r.Stash {
 		_dataer := &Dataer{
-			Keysunq: map[string]bool{},
+			Keysunq: make(map[string]bool),
 		}
 		dig_rks := strings.Split(rk, "|")
 		dig_key := rv.fakey
@@ -266,16 +264,14 @@ func (r *RelationLoader) load(db *gorm.DB) {
 		_dataer.GetKeys(input_v, dig_key)
 		fakeys[rk] = _dataer.Keys
 	}
-	//加载子项
-	// var subcollect = map[string]any{}
+
+	// 加载子项
 	for rk, keys := range fakeys {
-
 		rv := r.Stash[rk]
-		rv_mt_slice_t := reflect.SliceOf(reflect.TypeOf(rv.childModel))
-		rv_silce := reflect.New(rv_mt_slice_t).Interface()
 
-		rvSliceType := reflect.SliceOf(reflect.TypeOf(rv.childModel))
-		rvSlicePtr := reflect.New(rvSliceType)
+		childType := reflect.TypeOf(rv.childModel)
+		sliceType := reflect.SliceOf(childType)
+		slicePtr := reflect.New(sliceType)
 
 		subcq := db
 		if rv.cdb != nil {
@@ -283,41 +279,34 @@ func (r *RelationLoader) load(db *gorm.DB) {
 		} else {
 			subcq = subcq.Model(rv.childModel)
 		}
+
 		if len(keys) > 0 {
-			subcq.Where(rv.sukey+" in ?", keys).Find(rvSlicePtr.Interface())
-			rv_silce = rvSlicePtr.Elem().Interface()
-
-			// rows, err := subcq.Where(rv.sukey+" in ?", keys).
-			// 	Rows()
-			// if err != nil {
-			// 	fmt.Println(err)
-			// }
-			// defer rows.Close()
-			// for rows.Next() {
-			// 	element := reflect.New(reflect.TypeOf(rv.childModel)).Interface()
-			// 	db.ScanRows(rows, element)
-			// 	reflect.ValueOf(rv_silce).Elem().Set(reflect.Append(reflect.ValueOf(rv_silce).Elem(),
-			// 		reflect.ValueOf(element).Elem()))
-			// }
+			subcq.Where(rv.sukey+" IN ?", keys).Find(slicePtr.Interface())
 		}
+		sliceValue := slicePtr.Elem().Interface()
 
-		//填入结果
+		// rows, err := subcq.Where(rv.sukey+" in ?", keys).
 		if len(rv.Stash) > 0 {
-			rv.input = bmap.Parse(rv_silce)
+			rv.input = bmap.Parse(sliceValue)
 			rv.load(db)
 		} else {
-			rv.result = bmap.Parse(rv_silce)
+			// result := bmap.Parse(sliceValue)
+			rv.result = bmap.Parse(sliceValue)
 		}
 
-		//生成结果
+		// 设置默认比较函数
 		if rv.compareFunc == nil {
+			fakey := rv.fakey
+			sukey := rv.sukey
 			rv.compareFunc = func(p, s *bmap.BMap) bool {
-				return p.Get(rv.fakey).String() != "" && p.Get(rv.fakey).String() == s.Get(rv.sukey).String()
+				pVal := p.Get(fakey).String()
+				sVal := s.Get(sukey).String()
+				return pVal != "" && pVal == sVal
 			}
 		}
 
-		r_rv := r.result   //父集
-		rv_rv := rv.result //子集
+		r_rv := r.result   // 父集
+		rv_rv := rv.result // 子集
 		// dataer := NewDataer(r_rv.String(), rv.compareFunc, rv.subModifyFunc, rv_rv)
 		dataer := NewDataer().
 			SetMeta(r_rv).
@@ -328,16 +317,11 @@ func (r *RelationLoader) load(db *gorm.DB) {
 		switch rv.relation_type {
 		case HAS_ONE:
 			r.result = dataer.HasOne(r_rv, "", rk).GetResult()
-			// r.result, _ = HasOneV2(r.result, rv.result, rk, rv.compareFunc, rv.subModifyFunc)
 		case HAS_MANY:
 			r.result = dataer.HasMany(r_rv, "", rk).GetResult()
-			// r.result, _ = HasManyV2(r.result, rv.result, rk, rv.compareFunc, rv.subModifyFunc)
-		case BELONG_TO:
-			// r.result = BelongTo(r.result, rv.result, rk)
-		default:
+			// BELONG_TO 暂时用不到
 		}
 	}
-
 }
 
 // RelationOptions 关系选项

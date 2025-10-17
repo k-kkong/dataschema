@@ -54,7 +54,7 @@ func (d *Dataer) SetSubGroup(subGroup *bmap.BMap) *Dataer {
 func NewDataer() *Dataer {
 	return &Dataer{
 
-		Keys:    []string{},
+		Keys:    make([]string, 50),
 		Keysunq: map[string]bool{},
 	}
 }
