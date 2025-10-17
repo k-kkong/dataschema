@@ -38,10 +38,11 @@ func (s *StructUnpack) Unpack() any {
 
 func (s *StructUnpack) Map() map[string]any {
 
-	out := make(map[string]any)
 	t := s.value.Type()
+	num_field := t.NumField()
 
-	for i := 0; i < t.NumField(); i++ {
+	out := make(map[string]any, num_field)
+	for i := 0; i < num_field; i++ {
 		field := t.Field(i)
 		// 忽略未导出的字段
 		if field.PkgPath != "" {

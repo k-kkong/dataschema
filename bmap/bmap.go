@@ -298,15 +298,17 @@ func (bm *BMap) String() string {
 	}
 	var value string
 	switch bm.rvalue.Kind() {
-	case reflect.Map, reflect.Slice, reflect.Array:
+	case reflect.Slice, reflect.Array:
 		// 如果是字节流数组
-		if (bm.rvalue.Kind() == reflect.Slice || bm.rvalue.Kind() == reflect.Array) &&
-			bm.rvalue.Type().Elem().Kind() == reflect.Uint8 {
+		if bm.rvalue.Type().Elem().Kind() == reflect.Uint8 {
 			value = string(bm.rvalue.Bytes())
 		} else {
 			b, _ := json.Marshal(bv)
 			value = string(b)
 		}
+	case reflect.Map, reflect.Struct:
+		b, _ := json.Marshal(bv)
+		value = string(b)
 	case reflect.String:
 		value = bv.(string)
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
