@@ -252,7 +252,7 @@ func (r *RelationLoader) load(db *gorm.DB) {
 	var fakeys = make(map[string][]string, len(r.Stash))
 	for rk, rv := range r.Stash {
 		_dataer := &Dataer{
-			Keysunq: make(map[string]bool),
+			Keysunq: make(map[string]struct{}),
 		}
 		dig_rks := strings.Split(rk, "|")
 		dig_key := rv.fakey

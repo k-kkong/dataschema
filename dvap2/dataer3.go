@@ -22,8 +22,8 @@ type Dataer struct {
 
 	Meta *bmap.BMap //原始数据
 
-	Keys    []string        //key
-	Keysunq map[string]bool //去重
+	Keys    []string            //key
+	Keysunq map[string]struct{} //去重
 }
 
 // SetMeta 设置要操作的原始数据即父数据 (json 字符串)
@@ -54,8 +54,8 @@ func (d *Dataer) SetSubGroup(subGroup *bmap.BMap) *Dataer {
 func NewDataer() *Dataer {
 	return &Dataer{
 
-		Keys:    make([]string, 50),
-		Keysunq: map[string]bool{},
+		Keys:    make([]string, 0, 10),
+		Keysunq: map[string]struct{}{},
 	}
 }
 
@@ -85,7 +85,7 @@ func (d *Dataer) GetKeys(input *bmap.BMap, dig_key string) *Dataer {
 				// 过滤掉空的 键值
 				if _v != "" {
 					if _, ok := d.Keysunq[_v]; !ok {
-						d.Keysunq[_v] = true
+						d.Keysunq[_v] = struct{}{}
 						d.Keys = append(d.Keys, _v)
 					}
 				}
@@ -102,7 +102,7 @@ func (d *Dataer) GetKeys(input *bmap.BMap, dig_key string) *Dataer {
 			// 过滤掉空的 键值
 			if _v != "" {
 				if _, ok := d.Keysunq[_v]; !ok {
-					d.Keysunq[_v] = true
+					d.Keysunq[_v] = struct{}{}
 					d.Keys = append(d.Keys, _v)
 				}
 			}
