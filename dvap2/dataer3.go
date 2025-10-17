@@ -282,8 +282,8 @@ func (s *Dataer) HasMany(input *bmap.BMap, this_key, relation string) *Dataer {
 		iv := input
 		if len(relations) > 1 {
 			relation = strings.TrimPrefix(relation, fmt.Sprintf("%s|", _relatin_first))
-			iv := input.Get(_relatin_first)
-			s.HasMany(iv, w_key, relation)
+			meta := input.Get(_relatin_first)
+			s.HasMany(meta, w_key, relation)
 		} else {
 
 			//最后一个，直接比较
