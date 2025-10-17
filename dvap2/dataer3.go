@@ -60,8 +60,8 @@ func NewDataer() *Dataer {
 }
 
 // GetResult 获取最终结果
-func (d *Dataer) GetResult() any {
-	return d.Meta.Value()
+func (d *Dataer) GetResult() *bmap.BMap {
+	return d.Meta
 }
 
 // GetKeys 获取原属数据中 指定深度的key值，最终会得到一个数组
@@ -186,8 +186,8 @@ func (s *Dataer) HasOne(input *bmap.BMap, this_key, relation string) *Dataer {
 		iv := input
 		if len(relations) > 1 {
 			relation = strings.TrimPrefix(relation, fmt.Sprintf("%s|", _relatin_first))
-			iv := input.Get(_relatin_first)
-			s.HasOne(iv, w_key, relation)
+			meta := input.Get(_relatin_first)
+			s.HasOne(meta, w_key, relation)
 		} else {
 			//最后一个，直接比较
 			match_v := NewSlicer(s.SubGroup.Array()).Take(func(b *bmap.BMap) bool {

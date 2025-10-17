@@ -109,9 +109,9 @@ type RELARTION_NET map[string]*RelationLoader
 
 // 关系网络
 type RelationLoader struct {
-	input         interface{}   //输入
-	result        interface{}   //输出
-	childModel    interface{}   //子模型
+	input         *bmap.BMap    //输入
+	result        *bmap.BMap    //输出
+	childModel    any           //子模型
 	compareFunc   CompareFun    //比较方法
 	fakey         string        //父
 	sukey         string        //子
@@ -125,13 +125,13 @@ type RelationLoader struct {
 }
 
 // GetInput 获取输入
-func (r *RelationLoader) GetInput() interface{} {
-	return r.input
+func (r *RelationLoader) GetInput() any {
+	return r.input.Value()
 }
 
 // GetResult 获取输出
-func (r *RelationLoader) GetResult() interface{} {
-	return r.result
+func (r *RelationLoader) GetResult() any {
+	return r.result.Value()
 }
 
 // Error 获取错误
@@ -140,9 +140,9 @@ func (r *RelationLoader) Error() error {
 }
 
 // NewRelationLoader 初始化关系网络
-func NewRelationLoader(input interface{}, OpenPrintErrStack bool) *RelationLoader {
+func NewRelationLoader(input any, OpenPrintErrStack bool) *RelationLoader {
 	return &RelationLoader{
-		input:             input,
+		input:             bmap.Parse(input),
 		Stash:             RELARTION_NET{},
 		OpenPrintErrStack: OpenPrintErrStack,
 	}
@@ -189,7 +189,7 @@ func (r *RelationLoader) AddRelationWithOptions(opt *RelationOptions) *RelationL
 // cdb 自定义查询子数据的条件db 非必填
 // anonps 自定义父子数据修改，在连接数据的时候会调用  func(p, s *bmap.BMap) (*bmap.BMap, *bmap.BMap) 非必填
 func (r *RelationLoader) AddRelation(relation_type RELATION_TYPE, relation, fakey, sukey string,
-	Child interface{}, compareFunc CompareFun, cdb *gorm.DB, anonps ...interface{}) *RelationLoader {
+	Child any, compareFunc CompareFun, cdb *gorm.DB, anonps ...any) *RelationLoader {
 	var err error
 	func(err *error) {
 		defer catch(err, r.OpenPrintErrStack)
@@ -247,7 +247,7 @@ func (r *RelationLoader) LoadResult(db *gorm.DB) *RelationLoader {
 
 func (r *RelationLoader) load(db *gorm.DB) {
 
-	input_v := bmap.Parse(r.input)
+	input_v := r.input
 	r.result = r.input
 	//取key
 	var fakeys = map[string][]string{}
@@ -267,7 +267,7 @@ func (r *RelationLoader) load(db *gorm.DB) {
 		fakeys[rk] = _dataer.Keys
 	}
 	//加载子项
-	// var subcollect = map[string]interface{}{}
+	// var subcollect = map[string]any{}
 	for rk, keys := range fakeys {
 
 		rv := r.Stash[rk]
@@ -303,10 +303,10 @@ func (r *RelationLoader) load(db *gorm.DB) {
 
 		//填入结果
 		if len(rv.Stash) > 0 {
-			rv.input = rv_silce
+			rv.input = bmap.Parse(rv_silce)
 			rv.load(db)
 		} else {
-			rv.result = rv_silce
+			rv.result = bmap.Parse(rv_silce)
 		}
 
 		//生成结果
@@ -316,8 +316,8 @@ func (r *RelationLoader) load(db *gorm.DB) {
 			}
 		}
 
-		r_rv := bmap.Parse(r.result)   //父集
-		rv_rv := bmap.Parse(rv.result) //子集
+		r_rv := r.result   //父集
+		rv_rv := rv.result //子集
 		// dataer := NewDataer(r_rv.String(), rv.compareFunc, rv.subModifyFunc, rv_rv)
 		dataer := NewDataer().
 			SetMeta(r_rv).
@@ -346,7 +346,7 @@ type RelationOptions struct {
 	Relation      string        //必填 父子关系名
 	Fakey         string        //必填 父元素对应的key
 	Sukey         string        //必填 子元素对应的key
-	Child         interface{}   //必填 子元素模型
+	Child         any           //必填 子元素模型
 	CompareFunc   CompareFun    //可选 自定义父子映射函数
 	Cdb           *gorm.DB      //可选 自定义查询子数据的条件db
 	SubModifyFunc SubModifyFunc //可选 自定义 父子数据修改函数
@@ -381,7 +381,7 @@ func (r *RelationOptions) SetSukey(sukey string) *RelationOptions {
 }
 
 // SetChild 设置子数据的model 一般为gorm 对应的struct
-func (r *RelationOptions) SetChild(child interface{}) *RelationOptions {
+func (r *RelationOptions) SetChild(child any) *RelationOptions {
 	r.Child = child
 	return r
 }
