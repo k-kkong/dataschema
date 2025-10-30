@@ -113,11 +113,21 @@ func (g *GQuikSave) convertToSnakeCase(str string) string {
 }
 
 func (g *GQuikSave) GetUpdateMapping(src any) map[string]any {
-	var mapping = map[string]any{}
-	srcv := bmap.Parse(src)
 
-	// 将 BMap 转换为 map[string]any 以便查找
-	srcMap := srcv.Map()
+	var mapping = map[string]any{}
+	if src == nil {
+		return mapping
+	}
+
+	var srcMap map[string]any
+	if val, ok := src.(map[string]any); ok {
+		srcMap = val
+	} else if val, ok := src.(*bmap.BMap); ok {
+		srcMap = val.Map()
+	} else {
+		srcv := bmap.Parse(src)
+		srcMap = srcv.Map()
+	}
 
 	// 遍历 schema 中的所有字段
 	for fieldName, fieldValue := range g.schema {
