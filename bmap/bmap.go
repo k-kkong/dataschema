@@ -25,6 +25,11 @@ func (t BMap) MarshalJSON() ([]byte, error) {
 }
 
 func Parse(data any, opts ...string) *BMap {
+
+	if val, ok := data.(*BMap); ok {
+		return val
+	}
+
 	var tagname = "json"
 	if len(opts) > 0 {
 		tagname = opts[0]
