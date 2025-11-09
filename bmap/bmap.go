@@ -226,10 +226,14 @@ func (bm *BMap) setValue(target reflect.Value, paths []string, value any) reflec
 			target = reflect.ValueOf(tv)
 		}
 
+		p0 := paths[0]
+		p0 = strings.TrimPrefix(p0, "##")
+
 		if len(paths) == 1 {
-			target.SetMapIndex(reflect.ValueOf(paths[0]), reflect.ValueOf(value))
+			target.SetMapIndex(reflect.ValueOf(p0), reflect.ValueOf(value))
 		} else {
-			next := target.MapIndex(reflect.ValueOf(paths[0]))
+
+			next := target.MapIndex(reflect.ValueOf(p0))
 			if !next.IsValid() || next.IsNil() {
 				// 如果下一级是 nil，则根据path创建新的 map 或 slice
 				if _, ok := isIntegerStr(paths[0]); ok {
@@ -241,7 +245,7 @@ func (bm *BMap) setValue(target reflect.Value, paths []string, value any) reflec
 				}
 			}
 			nextv := bm.setValue(next, paths[1:], value)
-			target.SetMapIndex(reflect.ValueOf(paths[0]), nextv)
+			target.SetMapIndex(reflect.ValueOf(p0), nextv)
 		}
 	}
 	return target
