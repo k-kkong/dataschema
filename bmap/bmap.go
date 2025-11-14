@@ -654,10 +654,8 @@ func (bm *BMap) fillValue(v reflect.Value) {
 	case reflect.Interface:
 		goVal := bm.Value()
 		if goVal == nil {
-			// 设置 interface{} 为 nil（必须用 Zero）
 			v.Set(reflect.Zero(v.Type()))
 		} else {
-			// 将 any 转为 reflect.Value 并赋值
 			v.Set(reflect.ValueOf(goVal))
 		}
 	default:
