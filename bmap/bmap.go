@@ -512,7 +512,7 @@ func (bm *BMap) Time() time.Time {
 	return value
 }
 
-// FillModel 已json标签填充结构体
+// FillModel 以json标签填充结构体
 func (bm *BMap) FillModel(src any) {
 	v := reflect.ValueOf(src)
 	if v.Kind() != reflect.Ptr {
@@ -651,7 +651,15 @@ func (bm *BMap) fillValue(v reflect.Value) {
 		})
 
 		v.Set(newMap)
-
+	case reflect.Interface:
+		goVal := bm.Value()
+		if goVal == nil {
+			// 设置 interface{} 为 nil（必须用 Zero）
+			v.Set(reflect.Zero(v.Type()))
+		} else {
+			// 将 any 转为 reflect.Value 并赋值
+			v.Set(reflect.ValueOf(goVal))
+		}
 	default:
 		// 忽略不支持的类型
 	}
