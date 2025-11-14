@@ -276,6 +276,7 @@ func (bm *BMap) Map() map[string]any {
 }
 
 func (bm *BMap) IsArray() bool {
+	bm.Value()
 	return bm.rvalue.Kind() == reflect.Slice || bm.rvalue.Kind() == reflect.Array
 }
 func (bm *BMap) IsNil() bool {
@@ -284,6 +285,7 @@ func (bm *BMap) IsNil() bool {
 
 // IsObject 判断当前 BMap 是否表示一个对象（即底层是 map 类型）
 func (bm *BMap) IsObject() bool {
+	bm.Value()
 	if !bm.rvalue.IsValid() {
 		return false
 	}
