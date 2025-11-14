@@ -512,47 +512,51 @@ func (bm *BMap) Time() time.Time {
 	return value
 }
 
-// FillModel 以json标签填充结构体
-func (bm *BMap) FillModel(src any) {
+// Fill 填充数据到目标，如果目标是结构体，则使用json标签填充
+func (bm *BMap) Fill(src any) {
 	v := reflect.ValueOf(src)
 	if v.Kind() != reflect.Ptr {
 		panic("src must be a pointer to struct")
 	}
 	v = v.Elem()
-	if v.Kind() != reflect.Struct {
-		panic("src must be a pointer to struct")
-	}
 
-	t := v.Type()
-	for i := 0; i < v.NumField(); i++ {
-		field := v.Field(i)
-		structField := t.Field(i)
+	switch v.Kind() {
+	case reflect.Struct:
+		t := v.Type()
+		for i := 0; i < v.NumField(); i++ {
+			field := v.Field(i)
+			structField := t.Field(i)
 
-		if !field.CanSet() {
-			continue
-		}
-
-		tag := structField.Tag.Get("json")
-		var key string
-		if tag == "-" {
-			continue
-		} else if tag == "" {
-			key = structField.Name
-		} else {
-			parts := strings.Split(tag, ",")
-			key = parts[0]
-			if key == "" {
-				key = structField.Name
+			if !field.CanSet() {
+				continue
 			}
-		}
 
-		subBm := bm.Get(key)
-		if subBm == nil || !subBm.IsExists() {
-			continue
-		}
+			tag := structField.Tag.Get("json")
+			var key string
+			if tag == "-" {
+				continue
+			} else if tag == "" {
+				key = structField.Name
+			} else {
+				parts := strings.Split(tag, ",")
+				key = parts[0]
+				if key == "" {
+					key = structField.Name
+				}
+			}
 
-		subBm.fillField(field)
+			subBm := bm.Get(key)
+			if subBm == nil || !subBm.IsExists() {
+				continue
+			}
+
+			subBm.fillField(field)
+		}
+	default:
+		bm.fillField(v)
+
 	}
+
 }
 
 // fillField 填充字段
@@ -599,7 +603,7 @@ func (bm *BMap) fillValue(v reflect.Value) {
 			v.Set(reflect.ValueOf(bm.Time()))
 		} else {
 			nestedPtr := reflect.New(v.Type())
-			bm.FillModel(nestedPtr.Interface())
+			bm.Fill(nestedPtr.Interface())
 			v.Set(nestedPtr.Elem())
 		}
 	case reflect.Slice:
