@@ -282,6 +282,16 @@ func (bm *BMap) IsNil() bool {
 	return bm.Value() == nil
 }
 
+// IsObject 判断当前 BMap 是否表示一个对象（即底层是 map 类型）
+func (bm *BMap) IsObject() bool {
+	if !bm.rvalue.IsValid() {
+		return false
+	}
+
+	k := bm.rvalue.Kind()
+	return k == reflect.Map || k == reflect.Struct
+}
+
 func (bm *BMap) Array() []*BMap {
 	brv := bm.rvalue
 	for brv.Kind() == reflect.Ptr || brv.Kind() == reflect.Interface {
@@ -298,6 +308,35 @@ func (bm *BMap) Array() []*BMap {
 		values = append(values, bm)
 	}
 	return values
+}
+
+func (bm *BMap) Foreach(f func(key string, value *BMap) bool) {
+
+	k := bm.rvalue.Kind()
+	switch k {
+	case reflect.Array, reflect.Slice:
+		for i := 0; i < bm.rvalue.Len(); i++ {
+			if !f(fmt.Sprint(i), Parse(bm.rvalue.Index(i).Interface())) {
+				return
+			}
+		}
+	case reflect.Map:
+		for _, keyv := range bm.rvalue.MapKeys() {
+			if !f(fmt.Sprint(keyv.Interface()), bm.Get(fmt.Sprint(keyv.Interface()))) {
+				return
+			}
+		}
+	case reflect.Struct:
+		unpk, ok := NewStructUnpack(bm.Value(), bm.TagName).Unpack().(map[string]any)
+		if ok {
+			for k, v := range unpk {
+				if !f(k, Parse(v)) {
+					return
+				}
+			}
+		}
+	}
+
 }
 
 func (bm *BMap) String() string {
@@ -469,4 +508,149 @@ func (bm *BMap) Time() time.Time {
 		value, _ = time.ParseInLocation(time.Layout, str, time.Local)
 	}
 	return value
+}
+
+// FillModel 已json标签填充结构体
+func (bm *BMap) FillModel(src any) {
+	v := reflect.ValueOf(src)
+	if v.Kind() != reflect.Ptr {
+		panic("src must be a pointer to struct")
+	}
+	v = v.Elem()
+	if v.Kind() != reflect.Struct {
+		panic("src must be a pointer to struct")
+	}
+
+	t := v.Type()
+	for i := 0; i < v.NumField(); i++ {
+		field := v.Field(i)
+		structField := t.Field(i)
+
+		if !field.CanSet() {
+			continue
+		}
+
+		tag := structField.Tag.Get("json")
+		var key string
+		if tag == "-" {
+			continue
+		} else if tag == "" {
+			key = structField.Name
+		} else {
+			parts := strings.Split(tag, ",")
+			key = parts[0]
+			if key == "" {
+				key = structField.Name
+			}
+		}
+
+		subBm := bm.Get(key)
+		if subBm == nil || !subBm.IsExists() {
+			continue
+		}
+
+		subBm.fillField(field)
+	}
+}
+
+// fillField 填充字段
+func (bm *BMap) fillField(field reflect.Value) {
+	if field.Kind() == reflect.Ptr {
+		// 处理：*T
+		elemType := field.Type().Elem()
+
+		// 创建 T 的新实例
+		newVal := reflect.New(elemType).Elem()
+		bm.fillField(newVal)
+
+		// 取地址得到 *T
+		ptrToNewVal := reflect.New(elemType)
+		ptrToNewVal.Elem().Set(newVal)
+
+		// 赋值
+		field.Set(ptrToNewVal)
+	} else {
+
+		// 非指针字段，直接填充
+		bm.fillValue(field)
+	}
+}
+
+// fillValue
+func (bm *BMap) fillValue(v reflect.Value) {
+	switch v.Kind() {
+	case reflect.String:
+		v.SetString(bm.String())
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		v.SetInt(bm.Int64())
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		val := bm.Int64()
+		if val >= 0 {
+			v.SetUint(uint64(val))
+		}
+	case reflect.Float32, reflect.Float64:
+		v.SetFloat(bm.Float()) // 建议统一为 Float64()
+	case reflect.Bool:
+		v.SetBool(bm.Bool())
+	case reflect.Struct:
+		if v.Type() == reflect.TypeOf(time.Time{}) {
+			v.Set(reflect.ValueOf(bm.Time()))
+		} else {
+			nestedPtr := reflect.New(v.Type())
+			bm.FillModel(nestedPtr.Interface())
+			v.Set(nestedPtr.Elem())
+		}
+	case reflect.Slice:
+		if !bm.IsArray() {
+			return // 不是数组，跳过
+		}
+		elems := bm.Array()
+		sliceType := v.Type()
+		// elemType := sliceType.Elem()
+
+		newSlice := reflect.MakeSlice(sliceType, len(elems), len(elems))
+
+		for i, itemBm := range elems {
+			if itemBm == nil {
+				continue
+			}
+			itemVal := newSlice.Index(i)
+
+			// 填充 slice 元素
+			itemBm.fillField(itemVal)
+		}
+
+		v.Set(newSlice)
+
+	case reflect.Map:
+		if !bm.IsObject() {
+			return // 不是对象，跳过
+		}
+		mapType := v.Type()
+		keyType := mapType.Key()
+		elemType := mapType.Elem()
+
+		// 只支持 map[string]T（符合 JSON 限制）
+		if keyType.Kind() != reflect.String {
+			return
+		}
+
+		newMap := reflect.MakeMap(mapType)
+		bm.Foreach(func(key string, value *BMap) bool {
+
+			// 创建 map value
+			mapVal := reflect.New(elemType).Elem()
+			value.fillField(mapVal)
+
+			// 设置 map[k] = value
+			newMap.SetMapIndex(reflect.ValueOf(key), mapVal)
+			return true
+
+		})
+
+		v.Set(newMap)
+
+	default:
+		// 忽略不支持的类型
+	}
 }
