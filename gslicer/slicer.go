@@ -539,6 +539,18 @@ func (s *Slicer[T]) Difference(keyFun func(itm T) any, at []T) *Slicer[T] {
 	return s
 }
 
+// Group 根据条件进行分组 成数组
+// 注意：这里要求 keyFun 返回的值必须是可比较的类型
+func (s *Slicer[T]) GroupBy(keyFun func(itm T) any) *GroupData[T] {
+	s.lock.Lock()
+	defer s.lock.Unlock()
+	groupdata := new(GroupData[T])
+	for _, item := range s.data {
+		groupdata.Set(keyFun(item), item)
+	}
+	return groupdata
+}
+
 // func (s *Slicer[T]) Map(transform func(T) any) any {
 // 	s.lock.Lock()
 // 	defer s.lock.Unlock()
