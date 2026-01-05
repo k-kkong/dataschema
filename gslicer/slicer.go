@@ -551,6 +551,33 @@ func (s *Slicer[T]) GroupBy(keyFun func(itm T) any) *GroupData[T] {
 	return groupdata
 }
 
+// Foreach 遍历每个元素
+// foreach 返回false时，中断遍历
+func (s *Slicer[T]) Foreach(foreach func(idx int, itm T) bool) {
+	s.lock.Lock()
+	defer s.lock.Unlock()
+	for i, item := range s.data {
+		if !foreach(i, item) {
+			break
+		}
+	}
+}
+
+// ForeachModify 遍历每个元素并修改
+// foreach 返回false时，中断遍历
+func (s *Slicer[T]) ForeachModify(foreach func(idx int, itm T) (T, bool)) *Slicer[T] {
+	s.lock.Lock()
+	defer s.lock.Unlock()
+	for i, item := range s.data {
+		if itm, ok := foreach(i, item); ok {
+			s.data[i] = itm
+		} else {
+			break
+		}
+	}
+	return s
+}
+
 // func (s *Slicer[T]) Map(transform func(T) any) any {
 // 	s.lock.Lock()
 // 	defer s.lock.Unlock()
