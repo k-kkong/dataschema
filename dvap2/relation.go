@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/k-kkong/dataschema/bmap"
+	"github.com/k-kkong/dataschema/gslicer"
 	"gorm.io/gorm"
 )
 
@@ -120,6 +121,7 @@ type RelationLoader struct {
 	err           error         //错误
 	subModifyFunc SubModifyFunc //子数据修改
 
+	loadKeysBatchSize int           //如果子数据的keys很大，可以分批加载
 	Stash             RELARTION_NET //关系网
 	OpenPrintErrStack bool          //是否开启打印错误堆栈
 }
@@ -159,6 +161,9 @@ func (r *RelationLoader) AddRelationWithOptions(opt *RelationOptions) *RelationL
 			fakey:         opt.Fakey,
 			sukey:         opt.Sukey,
 			relation_type: opt.RelationType,
+		}
+		if opt.LoadKeysBatchSize > 0 {
+			new_sr.loadKeysBatchSize = opt.LoadKeysBatchSize
 		}
 
 		if opt.CompareFunc != nil {
@@ -271,17 +276,45 @@ func (r *RelationLoader) load(db *gorm.DB) {
 
 		childType := reflect.TypeOf(rv.childModel)
 		sliceType := reflect.SliceOf(childType)
+		//
 		slicePtr := reflect.New(sliceType)
-
-		subcq := db
-		if rv.cdb != nil {
-			subcq = rv.cdb
-		} else {
-			subcq = subcq.Model(rv.childModel)
+		if len(keys) > 0 {
+			// 初始化相同的容量
+			sliceValue := reflect.MakeSlice(sliceType, 0, len(keys))
+			slicePtr.Elem().Set(sliceValue)
 		}
 
 		if len(keys) > 0 {
-			subcq.Where(rv.sukey+" IN ?", keys).Find(slicePtr.Interface())
+			// 检查是否需要分批加载
+			if rv.loadKeysBatchSize > 0 {
+				gslicer.NewSlicer(keys).BatchForeach(func(batchKeys []string) bool {
+					tempSlicePtr := reflect.New(sliceType)
+					// 分配容量
+					// tempSliceValue := reflect.MakeSlice(sliceType, 0, len(batchKeys))
+					// tempSlicePtr.Elem().Set(tempSliceValue)
+
+					subcq := db
+					if rv.cdb != nil {
+						subcq = rv.cdb
+					} else {
+						subcq = subcq.Model(rv.childModel)
+					}
+
+					subcq.Where(rv.sukey+" IN ?", batchKeys).Find(tempSlicePtr.Interface())
+					slicePtr.Elem().Set(reflect.AppendSlice(slicePtr.Elem(), tempSlicePtr.Elem()))
+
+					return true
+				}, rv.loadKeysBatchSize)
+			} else {
+				subcq := db
+				if rv.cdb != nil {
+					subcq = rv.cdb
+				} else {
+					subcq = subcq.Model(rv.childModel)
+				}
+				// 不需要分批，直接查询
+				subcq.Where(rv.sukey+" IN ?", keys).Find(slicePtr.Interface())
+			}
 		}
 		sliceValue := slicePtr.Elem().Interface()
 
@@ -326,14 +359,15 @@ func (r *RelationLoader) load(db *gorm.DB) {
 
 // RelationOptions 关系选项
 type RelationOptions struct {
-	RelationType  RELATION_TYPE //必填 父子关系类型
-	Relation      string        //必填 父子关系名
-	Fakey         string        //必填 父元素对应的key
-	Sukey         string        //必填 子元素对应的key
-	Child         any           //必填 子元素模型
-	CompareFunc   CompareFun    //可选 自定义父子映射函数
-	Cdb           *gorm.DB      //可选 自定义查询子数据的条件db
-	SubModifyFunc SubModifyFunc //可选 自定义 父子数据修改函数
+	RelationType      RELATION_TYPE //必填 父子关系类型
+	Relation          string        //必填 父子关系名
+	Fakey             string        //必填 父元素对应的key
+	Sukey             string        //必填 子元素对应的key
+	Child             any           //必填 子元素模型
+	CompareFunc       CompareFun    //可选 自定义父子映射函数
+	Cdb               *gorm.DB      //可选 自定义查询子数据的条件db
+	SubModifyFunc     SubModifyFunc //可选 自定义 父子数据修改函数
+	LoadKeysBatchSize int           //可选 子数据的keys很大，可以分批加载
 }
 
 func NewRelationOptions() *RelationOptions {
