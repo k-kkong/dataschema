@@ -451,6 +451,9 @@ func (bm *BMap) Time() time.Time {
 	var value time.Time
 	var err error
 	str := bm.String()
+	str = strings.TrimSuffix(str, `"`)
+	str = strings.TrimPrefix(str, `"`)
+
 	value, err = time.ParseInLocation(time.DateTime, str, time.Local)
 	if err != nil {
 		value, err = time.ParseInLocation(time.DateOnly, str, time.Local)
