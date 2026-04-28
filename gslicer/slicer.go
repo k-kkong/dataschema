@@ -80,6 +80,31 @@ func (s *Slicer[T]) Concurrency(f func(T), size int) {
 	wg.Wait()
 }
 
+// ConcurrencyIdx 并发处理
+// f并发处理函数, _ele元素项, _idx索引
+// size并发数量
+func (s *Slicer[T]) ConcurrencyIdx(f func(_ele T, _idx int), size int) {
+	s.lock.Lock()
+	defer s.lock.Unlock()
+	if size <= 0 {
+		size = 1
+	}
+	var wg = &sync.WaitGroup{}
+	var limit = make(chan struct{}, size)
+	for i, v := range s.data {
+		wg.Add(1)
+		limit <- struct{}{}
+		go func(_v T, _i int) {
+			defer func() {
+				wg.Done()
+				<-limit
+			}()
+			f(_v, _i)
+		}(v, i)
+	}
+	wg.Wait()
+}
+
 func (s *Slicer[T]) Len() int {
 	s.lock.Lock()
 	defer s.lock.Unlock()
@@ -433,7 +458,7 @@ func (s *Slicer[T]) Unique(keyFun func(itm T) any, ats ...[]T) *Slicer[T] {
 }
 
 // Intersection 求所有集合中的交集
-// 使用 keyFun 将元素转换为可比较的 key，并求基准集合与所有 ats 集合的交集。
+// 使用 keyFun 将元素转换为可比较的 key，计算基准集合与所有 ats 集合的交集。
 // 只保留首次出现的满足条件的元素，结果赋值给 s.data。
 func (s *Slicer[T]) Intersection(keyFun func(itm T) any, ats ...[]T) *Slicer[T] {
 	s.lock.Lock()
