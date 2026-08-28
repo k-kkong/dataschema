@@ -5,16 +5,59 @@ type GroupData[T any] struct {
 	keys    []any
 }
 
+// NewGroupData 创建 GroupData 对象
+func NewGroupData[T any]() *GroupData[T] {
+	return &GroupData[T]{
+		slicers: make(map[any]*Slicer[T]),
+		keys:    make([]any, 0),
+	}
+}
+
+// 延迟初始化, 兼容 new(GroupData[T]) 零值用法
+func (g *GroupData[T]) init() {
+	if g.slicers == nil {
+		g.slicers = make(map[any]*Slicer[T])
+	}
+	if g.keys == nil {
+		g.keys = make([]any, 0)
+	}
+}
+
 func (g *GroupData[T]) Set(key any, value T) {
+	g.init()
 	if _, ok := g.slicers[key]; !ok {
 		g.keys = append(g.keys, key)
-		g.slicers[key] = new(Slicer[T])
+		g.slicers[key] = NewSlicer(make([]T, 0))
 	}
 	g.slicers[key].Append(value)
 }
 
+// Get 获取指定 key 的数据, key 不存在时返回空切片
 func (g *GroupData[T]) Get(key any) []T {
-	return g.slicers[key].Data()
+	if sl, ok := g.slicers[key]; ok {
+		return sl.Data()
+	}
+	return make([]T, 0)
+}
+
+// Has 判断 key 是否存在
+func (g *GroupData[T]) Has(key any) bool {
+	_, ok := g.slicers[key]
+	return ok
+}
+
+// Delete 删除指定 key 的分组
+func (g *GroupData[T]) Delete(key any) {
+	if _, ok := g.slicers[key]; !ok {
+		return
+	}
+	delete(g.slicers, key)
+	for i, k := range g.keys {
+		if k == key {
+			g.keys = append(g.keys[:i], g.keys[i+1:]...)
+			break
+		}
+	}
 }
 
 func (g *GroupData[T]) Keys() []any {

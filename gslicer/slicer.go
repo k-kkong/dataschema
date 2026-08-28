@@ -1,7 +1,9 @@
 package gslicer
 
 import (
+	"context"
 	"fmt"
+	"math"
 	"math/rand"
 	"reflect"
 	"sort"
@@ -30,9 +32,16 @@ func NewSlicer[T any](input []T, is_copy ...bool) *Slicer[T] {
 }
 
 // Batch 将切片按指定大小分割
+// size<=0时按整批返回一批
 func (s *Slicer[T]) Batch(size int) [][]T {
 	s.lock.Lock()
 	defer s.lock.Unlock()
+	if size <= 0 {
+		if len(s.data) == 0 {
+			return [][]T{}
+		}
+		return [][]T{s.data}
+	}
 	var r = make([][]T, 0, len(s.data)/size+1)
 	for i := 0; i < len(s.data); i += size {
 		end := min(i+size, len(s.data))
@@ -43,10 +52,16 @@ func (s *Slicer[T]) Batch(size int) [][]T {
 
 // BatchForeach 分批处理
 // f 返回false时停止处理, f里的参数是分批后的切片
+// size<=0时按整批处理一次
 func (s *Slicer[T]) BatchForeach(f func([]T) bool, size int) {
 	s.lock.Lock()
 	defer s.lock.Unlock()
-	// var r = make([][]T, 0, len(s.data)/size+1)
+	if size <= 0 {
+		if len(s.data) > 0 {
+			f(s.data)
+		}
+		return
+	}
 	for i := 0; i < len(s.data); i += size {
 		end := min(i+size, len(s.data))
 		r := s.data[i:end]
@@ -58,19 +73,35 @@ func (s *Slicer[T]) BatchForeach(f func([]T) bool, size int) {
 
 // Concurrency 并发处理
 // f 并发处理函数 , size 并发数量
+// 使用数据快照执行, f 中回调本 Slicer 的方法不会死锁
+// f 内的 panic 会被捕获, 并在所有任务结束后在调用方重新抛出
 func (s *Slicer[T]) Concurrency(f func(T), size int) {
 	s.lock.Lock()
-	defer s.lock.Unlock()
+	data := make([]T, len(s.data))
+	copy(data, s.data)
+	s.lock.Unlock()
+
 	if size <= 0 {
 		size = 1
 	}
-	var wg = &sync.WaitGroup{}
-	var limit = make(chan struct{}, size)
-	for _, v := range s.data {
+	var (
+		wg       = &sync.WaitGroup{}
+		limit    = make(chan struct{}, size)
+		po       = &sync.Once{}
+		panicked bool
+		panicVal any
+	)
+	for _, v := range data {
 		wg.Add(1)
 		limit <- struct{}{}
 		go func(_v T) {
 			defer func() {
+				if r := recover(); r != nil {
+					po.Do(func() {
+						panicked = true
+						panicVal = r
+					})
+				}
 				wg.Done()
 				<-limit
 			}()
@@ -78,24 +109,43 @@ func (s *Slicer[T]) Concurrency(f func(T), size int) {
 		}(v)
 	}
 	wg.Wait()
+	if panicked {
+		panic(panicVal)
+	}
 }
 
 // ConcurrencyIdx 并发处理
 // f并发处理函数, _ele元素项, _idx索引
 // size并发数量
+// 使用数据快照执行, f 中回调本 Slicer 的方法不会死锁
+// f 内的 panic 会被捕获, 并在所有任务结束后在调用方重新抛出
 func (s *Slicer[T]) ConcurrencyIdx(f func(_ele T, _idx int), size int) {
 	s.lock.Lock()
-	defer s.lock.Unlock()
+	data := make([]T, len(s.data))
+	copy(data, s.data)
+	s.lock.Unlock()
+
 	if size <= 0 {
 		size = 1
 	}
-	var wg = &sync.WaitGroup{}
-	var limit = make(chan struct{}, size)
-	for i, v := range s.data {
+	var (
+		wg       = &sync.WaitGroup{}
+		limit    = make(chan struct{}, size)
+		po       = &sync.Once{}
+		panicked bool
+		panicVal any
+	)
+	for i, v := range data {
 		wg.Add(1)
 		limit <- struct{}{}
 		go func(_v T, _i int) {
 			defer func() {
+				if r := recover(); r != nil {
+					po.Do(func() {
+						panicked = true
+						panicVal = r
+					})
+				}
 				wg.Done()
 				<-limit
 			}()
@@ -103,6 +153,66 @@ func (s *Slicer[T]) ConcurrencyIdx(f func(_ele T, _idx int), size int) {
 		}(v, i)
 	}
 	wg.Wait()
+	if panicked {
+		panic(panicVal)
+	}
+}
+
+// ConcurrencyErr 支持错误收集与取消的并发处理
+// f 并发处理函数, size 并发数量
+// 任一任务返回 error 或 ctx 被取消时停止剩余任务
+// 返回首个 error; ctx 被取消且无任务错误时返回 ctx.Err()
+func (s *Slicer[T]) ConcurrencyErr(ctx context.Context, f func(context.Context, T) error, size int) error {
+	s.lock.Lock()
+	data := make([]T, len(s.data))
+	copy(data, s.data)
+	s.lock.Unlock()
+
+	if len(data) == 0 {
+		return nil
+	}
+	if size <= 0 {
+		size = 1
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	var (
+		wg       = &sync.WaitGroup{}
+		idxCh    = make(chan int)
+		errOnce  = &sync.Once{}
+		firstErr error
+	)
+	for w := 0; w < size; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := range idxCh {
+				if ctx.Err() != nil {
+					return
+				}
+				if err := f(ctx, data[i]); err != nil {
+					errOnce.Do(func() {
+						firstErr = err
+						cancel()
+					})
+					return
+				}
+			}
+		}()
+	}
+	for i := range data {
+		select {
+		case idxCh <- i:
+		case <-ctx.Done():
+		}
+	}
+	close(idxCh)
+	wg.Wait()
+	if firstErr != nil {
+		return firstErr
+	}
+	return ctx.Err()
 }
 
 func (s *Slicer[T]) Len() int {
@@ -118,6 +228,38 @@ func (s *Slicer[T]) Data() []T {
 		return make([]T, 0)
 	}
 	return s.data
+}
+
+// DataCopy 返回数据的副本, 外部修改不影响内部数据, 可安全在锁外使用
+func (s *Slicer[T]) DataCopy() []T {
+	s.lock.Lock()
+	defer s.lock.Unlock()
+	data := make([]T, len(s.data))
+	copy(data, s.data)
+	return data
+}
+
+// IsEmpty 是否为空切片
+func (s *Slicer[T]) IsEmpty() bool {
+	s.lock.Lock()
+	defer s.lock.Unlock()
+	return len(s.data) == 0
+}
+
+// IsNotEmpty 是否非空切片
+func (s *Slicer[T]) IsNotEmpty() bool {
+	s.lock.Lock()
+	defer s.lock.Unlock()
+	return len(s.data) > 0
+}
+
+// Clone 克隆一个数据独立的新 Slicer
+func (s *Slicer[T]) Clone() *Slicer[T] {
+	s.lock.Lock()
+	defer s.lock.Unlock()
+	data := make([]T, len(s.data))
+	copy(data, s.data)
+	return NewSlicer(data)
 }
 
 // func (s *Slicer[T]) ResSet() *Slicer[T] {
@@ -140,6 +282,11 @@ func (s *Slicer[T]) InSilce(item T, equal func(a, b T) bool) bool {
 	return false
 }
 
+// InSlice 判断元素是否在数组中 (InSilce 的正确拼写别名)
+func (s *Slicer[T]) InSlice(item T, equal func(a, b T) bool) bool {
+	return s.InSilce(item, equal)
+}
+
 // Contains 判断是否有元素符合条件
 func (s *Slicer[T]) Contains(equal func(b T) bool) bool {
 	s.lock.Lock()
@@ -151,6 +298,32 @@ func (s *Slicer[T]) Contains(equal func(b T) bool) bool {
 		}
 	}
 	return false
+}
+
+// All 判断是否所有元素都符合条件
+func (s *Slicer[T]) All(_f func(T) bool) bool {
+	s.lock.Lock()
+	defer s.lock.Unlock()
+
+	for _, v := range s.data {
+		if !_f(v) {
+			return false
+		}
+	}
+	return true
+}
+
+// None 判断是否没有元素符合条件
+func (s *Slicer[T]) None(_f func(T) bool) bool {
+	s.lock.Lock()
+	defer s.lock.Unlock()
+
+	for _, v := range s.data {
+		if _f(v) {
+			return false
+		}
+	}
+	return true
 }
 
 // Count 根据条件返回符合条件的元素数量
@@ -197,6 +370,60 @@ func (s *Slicer[T]) Take(_f func(T) bool) T {
 	return *new(T)
 }
 
+// First 返回第一个元素, 空切片返回零值
+func (s *Slicer[T]) First() T {
+	s.lock.Lock()
+	defer s.lock.Unlock()
+	if len(s.data) == 0 {
+		return *new(T)
+	}
+	return s.data[0]
+}
+
+// Last 返回最后一个元素, 空切片返回零值
+func (s *Slicer[T]) Last() T {
+	s.lock.Lock()
+	defer s.lock.Unlock()
+	if len(s.data) == 0 {
+		return *new(T)
+	}
+	return s.data[len(s.data)-1]
+}
+
+// At 返回指定索引的元素, 越界返回零值
+func (s *Slicer[T]) At(idx int) T {
+	s.lock.Lock()
+	defer s.lock.Unlock()
+	if idx < 0 || idx >= len(s.data) {
+		return *new(T)
+	}
+	return s.data[idx]
+}
+
+// IndexOf 返回第一个符合条件元素的索引, 未找到返回-1
+func (s *Slicer[T]) IndexOf(item T, equal func(a, b T) bool) int {
+	s.lock.Lock()
+	defer s.lock.Unlock()
+	for i, v := range s.data {
+		if equal(v, item) {
+			return i
+		}
+	}
+	return -1
+}
+
+// LastIndexOf 返回最后一个符合条件元素的索引, 未找到返回-1
+func (s *Slicer[T]) LastIndexOf(item T, equal func(a, b T) bool) int {
+	s.lock.Lock()
+	defer s.lock.Unlock()
+	for i := len(s.data) - 1; i >= 0; i-- {
+		if equal(s.data[i], item) {
+			return i
+		}
+	}
+	return -1
+}
+
 // Find 查找数组中符合条件的元素
 func (s *Slicer[T]) Find(_f func(T) bool) *Slicer[T] {
 	s.lock.Lock()
@@ -210,6 +437,20 @@ func (s *Slicer[T]) Find(_f func(T) bool) *Slicer[T] {
 	}
 	s.data = matches
 	return s
+}
+
+// Filter 过滤出符合条件的元素, 返回新的 Slicer, 不修改当前数据
+func (s *Slicer[T]) Filter(_f func(T) bool) *Slicer[T] {
+	s.lock.Lock()
+	defer s.lock.Unlock()
+
+	var matches = make([]T, 0, len(s.data))
+	for _, v := range s.data {
+		if _f(v) {
+			matches = append(matches, v)
+		}
+	}
+	return NewSlicer(matches)
 }
 
 func (s *Slicer[T]) _pop_idx(idx int) T {
@@ -256,7 +497,7 @@ func (s *Slicer[T]) PopHead() T {
 	return s._pop_idx(0)
 }
 
-// PopHead 取出最后一个元素并且在切片中删除
+// PopTail 取出最后一个元素并且在切片中删除
 func (s *Slicer[T]) PopTail() T {
 	s.lock.Lock()
 	defer s.lock.Unlock()
@@ -301,7 +542,7 @@ func (s *Slicer[T]) Prepend(item ...T) *Slicer[T] {
 	return s
 }
 
-// Delete 删除切片中的指定索引元素
+// RemoveByIdx 删除切片中的指定索引元素
 func (s *Slicer[T]) RemoveByIdx(idx int) *Slicer[T] {
 	s.lock.Lock()
 	defer s.lock.Unlock()
@@ -340,6 +581,9 @@ func (s *Slicer[T]) InsertIdx(idx int, item ...T) *Slicer[T] {
 func (s *Slicer[T]) Page(offset, limit int) *Slicer[T] {
 	s.lock.Lock()
 	defer s.lock.Unlock()
+	if offset < 0 {
+		offset = 0
+	}
 	if offset >= len(s.data) || limit <= 0 {
 		s.data = make([]T, 0)
 		return s
@@ -352,6 +596,36 @@ func (s *Slicer[T]) Page(offset, limit int) *Slicer[T] {
 	}
 	s.data = s.data[:limit]
 	return s
+}
+
+// TakeN 取前n个元素, 返回新的 Slicer, 不修改当前数据
+func (s *Slicer[T]) TakeN(n int) *Slicer[T] {
+	s.lock.Lock()
+	defer s.lock.Unlock()
+	if n <= 0 {
+		return NewSlicer(make([]T, 0))
+	}
+	if n > len(s.data) {
+		n = len(s.data)
+	}
+	data := make([]T, n)
+	copy(data, s.data[:n])
+	return NewSlicer(data)
+}
+
+// SkipN 跳过前n个元素, 返回新的 Slicer, 不修改当前数据
+func (s *Slicer[T]) SkipN(n int) *Slicer[T] {
+	s.lock.Lock()
+	defer s.lock.Unlock()
+	if n < 0 {
+		n = 0
+	}
+	if n >= len(s.data) {
+		return NewSlicer(make([]T, 0))
+	}
+	data := make([]T, len(s.data)-n)
+	copy(data, s.data[n:])
+	return NewSlicer(data)
 }
 
 // Sort 排序
@@ -368,41 +642,40 @@ func (s *Slicer[T]) Sort(_f func(a, b T) bool) *Slicer[T] {
 
 // SortByField 将指定字段值，按照所给顺序排序
 // _get_field_value 获取字段值
-// order 切片字段值顺序
+// order 切片字段值顺序, 必须为 slice/array, 否则不排序直接返回
 func (s *Slicer[T]) SortByField(_get_field_value func(T) any, order any) *Slicer[T] {
-
-	// sort := "desc"
-	// if len(sorts) > 0 {
-	// 	sort = sorts[0]
-	// }
-
-	// side := "head"
-	// if sort == "asc" {
-	// 	side = "tail"
-	// }
-
-	// s.data  是slice
-	var mapsort = map[string]int{}
 	orderv := reflect.ValueOf(order)
+	if order == nil || (orderv.Kind() != reflect.Slice && orderv.Kind() != reflect.Array) {
+		return s
+	}
+	rank := make(map[string]int, orderv.Len())
 	for i := 0; i < orderv.Len(); i++ {
-		mapsort[fmt.Sprint(orderv.Index(i).Interface())] = i
+		rank[fmt.Sprint(orderv.Index(i).Interface())] = i
 	}
 
-	s.Sort(func(a, b T) bool {
-		av_k := fmt.Sprint(_get_field_value(a))
-		bv_k := fmt.Sprint(_get_field_value(b))
-
-		av_v, ok := mapsort[av_k]
+	s.lock.Lock()
+	defer s.lock.Unlock()
+	// 预先计算每个元素的排序权重, 避免每次比较都执行 fmt.Sprint
+	keys := make([]int, len(s.data))
+	for i, v := range s.data {
+		rk, ok := rank[fmt.Sprint(_get_field_value(v))]
 		if !ok {
-			av_v = 9999999999
+			rk = math.MaxInt
 		}
-		bv_v, ok := mapsort[bv_k]
-		if !ok {
-			bv_v = 9999999999
-		}
-		return av_v < bv_v
+		keys[i] = rk
+	}
+	idxs := make([]int, len(s.data))
+	for i := range idxs {
+		idxs[i] = i
+	}
+	sort.SliceStable(idxs, func(a, b int) bool {
+		return keys[idxs[a]] < keys[idxs[b]]
 	})
-
+	ndata := make([]T, len(s.data))
+	for i, idx := range idxs {
+		ndata[i] = s.data[idx]
+	}
+	s.data = ndata
 	return s
 }
 
@@ -439,7 +712,8 @@ func (s *Slicer[T]) Unique(keyFun func(itm T) any, ats ...[]T) *Slicer[T] {
 	s.lock.Lock()
 	defer s.lock.Unlock()
 
-	newData := s.data
+	newData := make([]T, 0, len(s.data))
+	newData = append(newData, s.data...)
 	for _, at := range ats {
 		newData = append(newData, at...)
 	}
@@ -564,16 +838,60 @@ func (s *Slicer[T]) Difference(keyFun func(itm T) any, at []T) *Slicer[T] {
 	return s
 }
 
+// Union 求并集：基准集合 s.data 的元素 + ats 中 key 不重复的元素
+// 相同 key 只保留首次出现的元素，结果赋值给 s.data。
+// 注意：这里要求 keyFun 返回的值必须是可比较的类型
+func (s *Slicer[T]) Union(keyFun func(itm T) any, ats ...[]T) *Slicer[T] {
+	s.lock.Lock()
+	defer s.lock.Unlock()
+
+	seen := make(map[any]struct{}, len(s.data))
+	result := make([]T, 0, len(s.data))
+	for _, item := range s.data {
+		key := keyFun(item)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		result = append(result, item)
+	}
+	for _, at := range ats {
+		for _, item := range at {
+			key := keyFun(item)
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			result = append(result, item)
+		}
+	}
+	s.data = result
+	return s
+}
+
 // Group 根据条件进行分组 成数组
 // 注意：这里要求 keyFun 返回的值必须是可比较的类型
 func (s *Slicer[T]) GroupBy(keyFun func(itm T) any) *GroupData[T] {
 	s.lock.Lock()
 	defer s.lock.Unlock()
-	groupdata := new(GroupData[T])
+	groupdata := NewGroupData[T]()
 	for _, item := range s.data {
 		groupdata.Set(keyFun(item), item)
 	}
 	return groupdata
+}
+
+// KeyBy 按 key 将元素索引成 map
+// key 冲突时后者覆盖前者
+// 注意：这里要求 keyFun 返回的值必须是可比较的类型
+func (s *Slicer[T]) KeyBy(keyFun func(itm T) any) map[any]T {
+	s.lock.Lock()
+	defer s.lock.Unlock()
+	result := make(map[any]T, len(s.data))
+	for _, item := range s.data {
+		result[keyFun(item)] = item
+	}
+	return result
 }
 
 // Foreach 遍历每个元素
@@ -613,11 +931,48 @@ func (s *Slicer[T]) ForeachModify(foreach func(idx int, itm T) (T, bool)) *Slice
 // 	return result
 // }
 
-// Map 方法
+// Map 批量将 T 类型元素转换为 R 类型元素
 func Map[T, R any](input []T, transform func(T) R) []R {
-	result := make([]R, 0, len(input))
+	result := make([]R, len(input))
 	for i, v := range input {
 		result[i] = transform(v)
+	}
+	return result
+}
+
+// Pluck 批量提取元素的字段值 (Map 的语义化别名)
+func Pluck[T, R any](input []T, get func(T) R) []R {
+	return Map(input, get)
+}
+
+// Flatten 将二维切片展平为一维
+func Flatten[T any](input [][]T) []T {
+	total := 0
+	for _, v := range input {
+		total += len(v)
+	}
+	result := make([]T, 0, total)
+	for _, v := range input {
+		result = append(result, v...)
+	}
+	return result
+}
+
+// ZipPair Zip 的结果元素
+type ZipPair[A, B any] struct {
+	A A
+	B B
+}
+
+// Zip 将两个切片按索引配对, 结果长度为两个输入长度的较小值
+func Zip[A, B any](a []A, b []B) []ZipPair[A, B] {
+	n := len(a)
+	if len(b) < n {
+		n = len(b)
+	}
+	result := make([]ZipPair[A, B], 0, n)
+	for i := 0; i < n; i++ {
+		result = append(result, ZipPair[A, B]{A: a[i], B: b[i]})
 	}
 	return result
 }

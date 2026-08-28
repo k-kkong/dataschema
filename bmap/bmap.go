@@ -397,6 +397,29 @@ func (bm *BMap) Int() int {
 	return value
 }
 
+func (bm *BMap) Int64() int64 {
+	bv := bm.Value()
+	if bv == nil {
+		return 0
+	}
+	var value int64
+	switch bm.rvalue.Kind() {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		value = bm.rvalue.Int()
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		value = int64(bm.rvalue.Uint())
+	case reflect.Float32, reflect.Float64:
+		value = int64(bm.rvalue.Float())
+	default:
+		value, _ = strconv.ParseInt(bm.String(), 10, 64)
+	}
+	return value
+}
+
+func (bm *BMap) Int32() int32 {
+	return int32(bm.Int())
+}
+
 func (bm *BMap) Float() float64 {
 	bv := bm.Value()
 	if bv == nil {
@@ -416,23 +439,11 @@ func (bm *BMap) Float() float64 {
 	return value
 }
 
-func (bm *BMap) Int64() int64 {
-	bv := bm.Value()
-	if bv == nil {
-		return 0
-	}
-	var value int64
-	switch bm.rvalue.Kind() {
-	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		value = bm.rvalue.Int()
-	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-		value = int64(bm.rvalue.Uint())
-	case reflect.Float32, reflect.Float64:
-		value = int64(bm.rvalue.Float())
-	default:
-		value, _ = strconv.ParseInt(bm.String(), 10, 64)
-	}
-	return value
+func (bm *BMap) Float32() float32 {
+	return float32(bm.Float())
+}
+func (bm *BMap) Float64() float64 {
+	return bm.Float()
 }
 
 func (bm *BMap) Bool() bool {
