@@ -249,12 +249,20 @@ func (r *RelationLoader) LoadResult(db *gorm.DB) *RelationLoader {
 	}
 	return r
 }
+
+const defaultQueryConcurrency = 8
+
+type relationFetch struct {
+	name string
+	rel  *RelationLoader
+	keys []string
+}
+
 func (r *RelationLoader) load(db *gorm.DB) {
 	input_v := r.input
 	r.result = r.input
 
-	//取key
-	var fakeys = make(map[string][]string, len(r.Stash))
+	jobs := make([]*relationFetch, 0, len(r.Stash))
 	for rk, rv := range r.Stash {
 		_dataer := &Dataer{
 			Keysunq: make(map[string]struct{}),
@@ -262,99 +270,140 @@ func (r *RelationLoader) load(db *gorm.DB) {
 		dig_rks := strings.Split(rk, "|")
 		dig_key := rv.fakey
 		if len(dig_rks) > 1 {
-			dig_key = fmt.Sprintf("%s|%s",
-				strings.Join(dig_rks[:len(dig_rks)-1], "|"),
-				dig_key)
+			dig_key = strings.Join(dig_rks[:len(dig_rks)-1], "|") + "|" + dig_key
 		}
 		_dataer.GetKeys(input_v, dig_key)
-		fakeys[rk] = _dataer.Keys
+		jobs = append(jobs, &relationFetch{name: rk, rel: rv, keys: _dataer.Keys})
 	}
 
-	// 加载子项
-	for rk, keys := range fakeys {
-		rv := r.Stash[rk]
-
-		childType := reflect.TypeOf(rv.childModel)
-		sliceType := reflect.SliceOf(childType)
-		//
-		slicePtr := reflect.New(sliceType)
-		if len(keys) > 0 {
-			// 初始化相同的容量
-			sliceValue := reflect.MakeSlice(sliceType, 0, len(keys))
-			slicePtr.Elem().Set(sliceValue)
+	// 同级关系互不依赖，非事务下并行查询，总耗时接近最慢的那条而不是求和
+	if len(jobs) == 1 || !canParallelQuery(db, jobs) {
+		for _, job := range jobs {
+			r.fetchRelation(db, job)
 		}
+	} else {
+		gslicer.NewSlicer(jobs).Concurrency(func(job *relationFetch) {
+			r.fetchRelation(db, job)
+		}, min(len(jobs), defaultQueryConcurrency))
+	}
 
-		if len(keys) > 0 {
-			// 检查是否需要分批加载
-			if rv.loadKeysBatchSize > 0 {
-				gslicer.NewSlicer(keys).BatchForeach(func(batchKeys []string) bool {
-					tempSlicePtr := reflect.New(sliceType)
-					// 分配容量
-					// tempSliceValue := reflect.MakeSlice(sliceType, 0, len(batchKeys))
-					// tempSlicePtr.Elem().Set(tempSliceValue)
+	// 写回父节点必须串行，避免并发改同一棵结果树
+	for _, job := range jobs {
+		r.joinRelation(job)
+	}
+}
 
-					subcq := db
-					if rv.cdb != nil {
-						subcq = rv.cdb
-					} else {
-						subcq = subcq.Model(rv.childModel)
-					}
+func (r *RelationLoader) fetchRelation(db *gorm.DB, job *relationFetch) {
+	rv := job.rel
+	sliceValue := rv.queryChildren(db, job.keys)
+	if len(rv.Stash) > 0 {
+		rv.input = bmap.Parse(sliceValue)
+		rv.load(db)
+		return
+	}
+	rv.result = bmap.Parse(sliceValue)
+}
 
-					subcq.Where(rv.sukey+" IN ?", batchKeys).Find(tempSlicePtr.Interface())
-					slicePtr.Elem().Set(reflect.AppendSlice(slicePtr.Elem(), tempSlicePtr.Elem()))
-
-					return true
-				}, rv.loadKeysBatchSize)
-			} else {
-				subcq := db
-				if rv.cdb != nil {
-					subcq = rv.cdb
-				} else {
-					subcq = subcq.Model(rv.childModel)
-				}
-				// 不需要分批，直接查询
-				subcq.Where(rv.sukey+" IN ?", keys).Find(slicePtr.Interface())
-			}
+func (r *RelationLoader) joinRelation(job *relationFetch) {
+	rv := job.rel
+	useJoinIndex := rv.compareFunc == nil
+	if rv.compareFunc == nil {
+		fakey := rv.fakey
+		sukey := rv.sukey
+		rv.compareFunc = func(p, s *bmap.BMap) bool {
+			pVal := p.Get(fakey).String()
+			sVal := s.Get(sukey).String()
+			return pVal != "" && pVal == sVal
 		}
-		sliceValue := slicePtr.Elem().Interface()
+	}
 
-		// rows, err := subcq.Where(rv.sukey+" in ?", keys).
-		if len(rv.Stash) > 0 {
-			rv.input = bmap.Parse(sliceValue)
-			rv.load(db)
+	r_rv := r.result
+	rv_rv := rv.result
+	dataer := NewDataer().
+		SetMeta(r_rv).
+		SetCompareFunc(rv.compareFunc).
+		SetSubModifyFunc(rv.subModifyFunc).
+		SetSubGroup(rv_rv)
+	if useJoinIndex {
+		dataer.SetJoinKeys(rv.fakey, rv.sukey)
+	}
+
+	switch rv.relation_type {
+	case HAS_ONE:
+		r.result = dataer.HasOne(r_rv, "", job.name).GetResult()
+	case HAS_MANY:
+		r.result = dataer.HasMany(r_rv, "", job.name).GetResult()
+	}
+}
+
+func (rv *RelationLoader) queryChildren(db *gorm.DB, keys []string) any {
+	childType := reflect.TypeOf(rv.childModel)
+	sliceType := reflect.SliceOf(childType)
+	slicePtr := reflect.New(sliceType)
+	if len(keys) == 0 {
+		return slicePtr.Elem().Interface()
+	}
+	slicePtr.Elem().Set(reflect.MakeSlice(sliceType, 0, len(keys)))
+
+	if rv.loadKeysBatchSize > 0 {
+		batches := gslicer.NewSlicer(keys).Batch(rv.loadKeysBatchSize)
+		if len(batches) <= 1 || dbInTransaction(rv.scopedDB(db)) {
+			gslicer.NewSlicer(keys).BatchForeach(func(batchKeys []string) bool {
+				tempSlicePtr := reflect.New(sliceType)
+				rv.scopedDB(db).Where(rv.sukey+" IN ?", batchKeys).Find(tempSlicePtr.Interface())
+				slicePtr.Elem().Set(reflect.AppendSlice(slicePtr.Elem(), tempSlicePtr.Elem()))
+				return true
+			}, rv.loadKeysBatchSize)
 		} else {
-			// result := bmap.Parse(sliceValue)
-			rv.result = bmap.Parse(sliceValue)
-		}
-
-		// 设置默认比较函数
-		if rv.compareFunc == nil {
-			fakey := rv.fakey
-			sukey := rv.sukey
-			rv.compareFunc = func(p, s *bmap.BMap) bool {
-				pVal := p.Get(fakey).String()
-				sVal := s.Get(sukey).String()
-				return pVal != "" && pVal == sVal
+			parts := make([]reflect.Value, len(batches))
+			gslicer.NewSlicer(batches).ConcurrencyIdx(func(batchKeys []string, i int) {
+				tempSlicePtr := reflect.New(sliceType)
+				rv.scopedDB(db).Where(rv.sukey+" IN ?", batchKeys).Find(tempSlicePtr.Interface())
+				parts[i] = tempSlicePtr.Elem()
+			}, min(len(batches), defaultQueryConcurrency))
+			acc := reflect.MakeSlice(sliceType, 0, len(keys))
+			for _, p := range parts {
+				if p.IsValid() {
+					acc = reflect.AppendSlice(acc, p)
+				}
 			}
+			slicePtr.Elem().Set(acc)
 		}
+		return slicePtr.Elem().Interface()
+	}
 
-		r_rv := r.result   // 父集
-		rv_rv := rv.result // 子集
-		// dataer := NewDataer(r_rv.String(), rv.compareFunc, rv.subModifyFunc, rv_rv)
-		dataer := NewDataer().
-			SetMeta(r_rv).
-			SetCompareFunc(rv.compareFunc).
-			SetSubModifyFunc(rv.subModifyFunc).
-			SetSubGroup(rv_rv)
+	rv.scopedDB(db).Where(rv.sukey+" IN ?", keys).Find(slicePtr.Interface())
+	return slicePtr.Elem().Interface()
+}
 
-		switch rv.relation_type {
-		case HAS_ONE:
-			r.result = dataer.HasOne(r_rv, "", rk).GetResult()
-		case HAS_MANY:
-			r.result = dataer.HasMany(r_rv, "", rk).GetResult()
-			// BELONG_TO 暂时用不到
+func (rv *RelationLoader) scopedDB(db *gorm.DB) *gorm.DB {
+	if rv.cdb != nil {
+		return rv.cdb.Session(&gorm.Session{})
+	}
+	return db.Session(&gorm.Session{}).Model(rv.childModel)
+}
+
+func canParallelQuery(db *gorm.DB, jobs []*relationFetch) bool {
+	if dbInTransaction(db) {
+		return false
+	}
+	for _, job := range jobs {
+		if job.rel.cdb != nil && dbInTransaction(job.rel.cdb) {
+			return false
 		}
 	}
+	return true
+}
+
+func dbInTransaction(db *gorm.DB) bool {
+	if db == nil || db.Statement == nil || db.Statement.ConnPool == nil {
+		return false
+	}
+	_, ok := db.Statement.ConnPool.(interface {
+		Commit() error
+		Rollback() error
+	})
+	return ok
 }
 
 // RelationOptions 关系选项

@@ -9,6 +9,11 @@ import (
 	"time"
 )
 
+var (
+	typeMapStringAny = reflect.TypeOf(map[string]any{})
+	typeSliceAny     = reflect.TypeOf([]any{})
+)
+
 func isIntegerStr(s string) (int, bool) {
 	val, err := strconv.Atoi(s)
 	return val, err == nil
@@ -69,9 +74,14 @@ func Parse(data any, opts ...string) *BMap {
 }
 
 func (bm *BMap) Get(key string) *BMap {
-	paths := strings.Split(key, ".")
 	curVal := bm.rvalue
-	for _, p := range paths {
+	start := 0
+	for i := 0; i <= len(key); i++ {
+		if i != len(key) && key[i] != '.' {
+			continue
+		}
+		p := key[start:i]
+		start = i + 1
 
 		for curVal.Kind() == reflect.Ptr || curVal.Kind() == reflect.Interface {
 			curVal = curVal.Elem()
@@ -161,7 +171,7 @@ func (bm *BMap) setValue(target reflect.Value, paths []string, value any) reflec
 	ori_target_kind := target.Kind()
 	if idx, ok := isIntegerStr(paths[0]); ok {
 		// 判断类型，如果不是 []any，则转换复制
-		if target.Type() != reflect.TypeOf([]any{}) {
+		if target.Type() != typeSliceAny {
 
 			var ltv = 1
 			if ori_target_kind == reflect.Slice {
@@ -204,7 +214,7 @@ func (bm *BMap) setValue(target reflect.Value, paths []string, value any) reflec
 		}
 
 	} else {
-		if target.Type() != reflect.TypeOf(map[string]any{}) {
+		if target.Type() != typeMapStringAny {
 			tv := make(map[string]any)
 
 			// 只有map或者slice类型，才需要复制数据
@@ -300,16 +310,17 @@ func (bm *BMap) Array() []*BMap {
 		brv = brv.Elem()
 	}
 
-	var values []*BMap
 	switch brv.Kind() {
 	case reflect.Slice, reflect.Array:
-		for i := 0; i < brv.Len(); i++ {
-			values = append(values, Parse(brv.Index(i).Interface()))
+		n := brv.Len()
+		values := make([]*BMap, n)
+		for i := 0; i < n; i++ {
+			values[i] = Parse(brv.Index(i).Interface())
 		}
+		return values
 	default:
-		values = append(values, bm)
+		return []*BMap{bm}
 	}
-	return values
 }
 
 func (bm *BMap) Foreach(f func(key string, value *BMap) bool) {

@@ -1,7 +1,7 @@
 package dvap2
 
 import (
-	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/k-kkong/dataschema/bmap"
@@ -24,6 +24,15 @@ type Dataer struct {
 
 	Keys    []string            //key
 	Keysunq map[string]struct{} //去重
+
+	// 默认等值关联时使用索引，避免 HasOne/HasMany 对每个父元素线性扫描全部子元素
+	joinFaKey string
+	joinSuKey string
+
+	subArr       []*bmap.BMap
+	subPrepared  bool
+	subIndexOne  map[string]*bmap.BMap
+	subIndexMany map[string][]*bmap.BMap
 }
 
 // SetMeta 设置要操作的原始数据即父数据 (json 字符串)
@@ -47,6 +56,20 @@ func (d *Dataer) SetSubModifyFunc(smf SubModifyFunc) *Dataer {
 // SetSubGroup 设置子数据
 func (d *Dataer) SetSubGroup(subGroup *bmap.BMap) *Dataer {
 	d.SubGroup = subGroup
+	d.subArr = nil
+	d.subPrepared = false
+	d.subIndexOne = nil
+	d.subIndexMany = nil
+	return d
+}
+
+// SetJoinKeys 设置默认等值关联键，启用子数据索引匹配（O(n+m)）。
+// 自定义 CompareFunc 时不要调用，否则会跳过自定义比较逻辑。
+func (d *Dataer) SetJoinKeys(faKey, suKey string) *Dataer {
+	d.joinFaKey = faKey
+	d.joinSuKey = suKey
+	d.subIndexOne = nil
+	d.subIndexMany = nil
 	return d
 }
 
@@ -68,252 +91,259 @@ func (d *Dataer) GetResult() *bmap.BMap {
 // - input *bmap.BMap 原始数据
 // - dig_key string  要获取的key的深度参数 比如  body|bar 代表获取 input的body下的bar 的值列表
 func (d *Dataer) GetKeys(input *bmap.BMap, dig_key string) *Dataer {
+	if d.Keysunq == nil {
+		d.Keysunq = make(map[string]struct{})
+	}
+	d.getKeys(input, strings.Split(dig_key, "|"))
+	return d
+}
 
-	relations := strings.Split(dig_key, "|")
-	var _relatin_first = relations[0]
-
+func (d *Dataer) getKeys(input *bmap.BMap, parts []string) {
+	if input == nil {
+		return
+	}
 	if input.IsArray() {
-
-		if len(relations) > 1 {
-			for _, iv := range input.Array() {
-				d.GetKeys(iv, dig_key)
-			}
-		} else {
-			for _, iv := range input.Array() {
-				_v := iv.Get(_relatin_first).String()
-
-				// 过滤掉空的 键值
-				if _v != "" {
-					if _, ok := d.Keysunq[_v]; !ok {
-						d.Keysunq[_v] = struct{}{}
-						d.Keys = append(d.Keys, _v)
-					}
-				}
-			}
+		for _, iv := range input.Array() {
+			d.getKeys(iv, parts)
 		}
+		return
+	}
+	if len(parts) > 1 {
+		d.getKeys(input.Get(parts[0]), parts[1:])
+		return
+	}
+	_v := input.Get(parts[0]).String()
+	if _v == "" {
+		return
+	}
+	if _, ok := d.Keysunq[_v]; ok {
+		return
+	}
+	d.Keysunq[_v] = struct{}{}
+	d.Keys = append(d.Keys, _v)
+}
 
-	} else {
+func (s *Dataer) prepareSub() {
+	if s.subPrepared {
+		return
+	}
+	s.subPrepared = true
+	if s.SubGroup == nil {
+		s.subArr = []*bmap.BMap{}
+		return
+	}
+	s.subArr = s.SubGroup.Array()
+}
 
-		if len(relations) > 1 {
-			d.GetKeys(input.Get(_relatin_first), strings.TrimPrefix(dig_key, fmt.Sprintf("%s|", _relatin_first)))
-		} else {
-			_v := input.Get(_relatin_first).String()
-
-			// 过滤掉空的 键值
-			if _v != "" {
-				if _, ok := d.Keysunq[_v]; !ok {
-					d.Keysunq[_v] = struct{}{}
-					d.Keys = append(d.Keys, _v)
-				}
+func (s *Dataer) ensureSubIndex(many bool) {
+	s.prepareSub()
+	if s.joinSuKey == "" {
+		return
+	}
+	if many {
+		if s.subIndexMany != nil {
+			return
+		}
+		idx := make(map[string][]*bmap.BMap, len(s.subArr))
+		for _, sv := range s.subArr {
+			k := sv.Get(s.joinSuKey).String()
+			if k == "" {
+				continue
 			}
-
+			idx[k] = append(idx[k], sv)
+		}
+		s.subIndexMany = idx
+		return
+	}
+	if s.subIndexOne != nil {
+		return
+	}
+	idx := make(map[string]*bmap.BMap, len(s.subArr))
+	for _, sv := range s.subArr {
+		k := sv.Get(s.joinSuKey).String()
+		if k == "" {
+			continue
+		}
+		if _, ok := idx[k]; !ok {
+			idx[k] = sv
 		}
 	}
+	s.subIndexOne = idx
+}
 
-	return d
+func (s *Dataer) matchOne(parent *bmap.BMap) *bmap.BMap {
+	if s.joinFaKey != "" {
+		s.ensureSubIndex(false)
+		pVal := parent.Get(s.joinFaKey).String()
+		if pVal == "" {
+			return nil
+		}
+		return s.subIndexOne[pVal]
+	}
+	s.prepareSub()
+	if s.CF == nil {
+		return nil
+	}
+	for _, b := range s.subArr {
+		if s.CF(parent, b) {
+			return b
+		}
+	}
+	return nil
+}
+
+func (s *Dataer) matchMany(parent *bmap.BMap) []*bmap.BMap {
+	if s.joinFaKey != "" {
+		s.ensureSubIndex(true)
+		pVal := parent.Get(s.joinFaKey).String()
+		if pVal == "" {
+			return nil
+		}
+		return s.subIndexMany[pVal]
+	}
+	s.prepareSub()
+	if s.CF == nil {
+		return nil
+	}
+	out := make([]*bmap.BMap, 0)
+	for _, b := range s.subArr {
+		if s.CF(parent, b) {
+			out = append(out, b)
+		}
+	}
+	return out
+}
+
+func pathIndexField(prefix string, idx int, field string) string {
+	n := strconv.Itoa(idx)
+	if prefix == "" {
+		return n + "." + field
+	}
+	return prefix + "." + n + "." + field
+}
+
+func pathIndex(prefix string, idx int) string {
+	if prefix == "" {
+		return strconv.Itoa(idx)
+	}
+	return prefix + "." + strconv.Itoa(idx)
+}
+
+func pathField(prefix, field string) string {
+	if prefix == "" {
+		return field
+	}
+	return prefix + "." + field
+}
+
+func emptyBMap(v *bmap.BMap) *bmap.BMap {
+	if v == nil {
+		return &bmap.BMap{}
+	}
+	return v
 }
 
 // HasOne 将subdata arry 中符合条件的单个元素，加入到parent 指定位置中
 func (s *Dataer) HasOne(input *bmap.BMap, this_key, relation string) *Dataer {
+	s.hasOne(input, this_key, strings.Split(relation, "|"))
+	return s
+}
 
-	relations := strings.Split(relation, "|")
-	var _relatin_first = relations[0]
-	var w_key = this_key
+func (s *Dataer) hasOne(input *bmap.BMap, this_key string, relations []string) {
+	rel0 := relations[0]
+	rest := relations[1:]
+	last := len(rest) == 0
 
 	if input.IsArray() {
-
 		for k, iv := range input.Array() {
-
-			if this_key == "" {
-				w_key = fmt.Sprintf("%d.%s", k, _relatin_first)
-			} else {
-				w_key = fmt.Sprintf("%s.%d.%s", this_key, k, _relatin_first)
+			wKey := pathIndexField(this_key, k, rel0)
+			if !last {
+				s.hasOne(iv.Get(rel0), wKey, rest)
+				continue
 			}
-
-			// fmt.Println(k)
-			if len(relations) > 1 {
-				meta := iv.Get(_relatin_first)
-				relation = strings.TrimPrefix(relation, fmt.Sprintf("%s|", _relatin_first))
-
-				s.HasOne(meta, w_key, relation)
-			} else {
-				meta := iv
-				//最后一个，直接比较
-				// var match_v *bmap.BMap
-				// SliceFind(s.SubGroup.Array(), &match_v, func(sv *bmap.BMap) bool {
-				// 	return s.CF(meta, sv)
-				// })
-				match_v := NewSlicer(s.SubGroup.Array()).Take(func(b *bmap.BMap) bool {
-					return s.CF(meta, b)
-				})
-				if match_v == nil {
-					match_v = &bmap.BMap{}
-				}
-
-				if s.Smf != nil {
-
-					_iv, _match_v := s.Smf(iv, match_v)
-					match_v = _match_v
-
-					// 先把对应的 数组的元素父值替换掉
-					_iv_key := fmt.Sprintf("%s.%d", this_key, k)
-					if this_key == "" {
-						_iv_key = fmt.Sprintf("%d", k)
-					}
-
-					s.Meta.Set(_iv_key, _iv.Value())
-
-					// s.Meta = _meta.String()
-				}
-
-				// fmt.Println(w_key)
-				// fmt.Println(match_v.String())
-
-				s.Meta.Set(w_key, match_v.Value())
-
-				// fmt.Println(match_v.String())
-			}
-
-		}
-
-	} else {
-		if this_key == "" {
-			w_key = relations[0]
-		} else {
-			w_key = fmt.Sprintf("%s.%s", this_key, _relatin_first)
-		}
-
-		iv := input
-		if len(relations) > 1 {
-			relation = strings.TrimPrefix(relation, fmt.Sprintf("%s|", _relatin_first))
-			meta := input.Get(_relatin_first)
-			s.HasOne(meta, w_key, relation)
-		} else {
-			//最后一个，直接比较
-			match_v := NewSlicer(s.SubGroup.Array()).Take(func(b *bmap.BMap) bool {
-				return s.CF(iv, b)
-			})
-			if match_v == nil {
-				match_v = &bmap.BMap{}
-			}
-
+			matchV := emptyBMap(s.matchOne(iv))
 			if s.Smf != nil {
-				_iv, _match_v := s.Smf(iv, match_v)
-
-				// 先把对应的 数组的元素父值替换掉
-				if this_key == "" {
-					s.Meta = _iv
-				} else {
-					_iv_key := this_key
-					s.Meta.Set(_iv_key, _iv.Value())
-				}
-				match_v = _match_v
+				_iv, _matchV := s.Smf(iv, matchV)
+				matchV = _matchV
+				s.Meta.Set(pathIndex(this_key, k), _iv.Value())
 			}
-
-			// fmt.Println(w_key)
-			// fmt.Println(match_v.String())
-			// s.Meta = VSSetV(s.Meta, match_v.Value(), w_key)
-			s.Meta.Set(w_key, match_v.Value())
+			s.Meta.Set(wKey, matchV.Value())
 		}
-
+		return
 	}
 
-	return s
-
+	wKey := pathField(this_key, rel0)
+	if !last {
+		s.hasOne(input.Get(rel0), wKey, rest)
+		return
+	}
+	matchV := emptyBMap(s.matchOne(input))
+	if s.Smf != nil {
+		_iv, _matchV := s.Smf(input, matchV)
+		if this_key == "" {
+			s.Meta = _iv
+		} else {
+			s.Meta.Set(this_key, _iv.Value())
+		}
+		matchV = _matchV
+	}
+	s.Meta.Set(wKey, matchV.Value())
 }
 
 // HasMany 将subdata arry 中符合条件的多个元素，加入到parent 指定位置中
 func (s *Dataer) HasMany(input *bmap.BMap, this_key, relation string) *Dataer {
+	s.hasMany(input, this_key, strings.Split(relation, "|"))
+	return s
+}
 
-	relations := strings.Split(relation, "|")
-	var _relatin_first = relations[0]
-	var w_key = this_key
+func (s *Dataer) hasMany(input *bmap.BMap, this_key string, relations []string) {
+	rel0 := relations[0]
+	rest := relations[1:]
+	last := len(rest) == 0
 
 	if input.IsArray() {
-
 		for k, iv := range input.Array() {
-
-			if this_key == "" {
-				w_key = fmt.Sprintf("%d.%s", k, _relatin_first)
-			} else {
-				w_key = fmt.Sprintf("%s.%d.%s", this_key, k, _relatin_first)
+			wKey := pathIndexField(this_key, k, rel0)
+			if !last {
+				s.hasMany(iv.Get(rel0), wKey, rest)
+				continue
 			}
-			if len(relations) > 1 {
-				meta := iv.Get(_relatin_first)
-				relation = strings.TrimPrefix(relation, fmt.Sprintf("%s|", _relatin_first))
-				s.HasMany(meta, w_key, relation)
-			} else {
-				// meta := iv
-				// //最后一个，直接比较
-				var filter = make([]interface{}, 0)
-				for _, sv := range s.SubGroup.Array() {
-					if s.CF(iv, sv) {
-						if s.Smf != nil {
-							_iv, _sv := s.Smf(iv, sv)
-							_iv_key := fmt.Sprintf("%s.%d", this_key, k)
-							if this_key == "" {
-								_iv_key = fmt.Sprintf("%d", k)
-							}
-
-							iv = _iv
-							// s.Meta, _ = sjson.Set(s.Meta, _iv_key, _iv.Value())
-							s.Meta.Set(_iv_key, _iv.Value())
-
-							filter = append(filter, _sv.Value())
-						} else {
-							filter = append(filter, sv.Value())
-						}
-					}
-				}
-
-				// s.Meta, _ = sjson.Set(s.Meta, w_key, filter)
-				s.Meta.Set(w_key, filter)
-			}
-
-		}
-
-	} else {
-		if this_key == "" {
-			w_key = relations[0]
-		} else {
-			w_key = fmt.Sprintf("%s.%s", this_key, _relatin_first)
-		}
-
-		iv := input
-		if len(relations) > 1 {
-			relation = strings.TrimPrefix(relation, fmt.Sprintf("%s|", _relatin_first))
-			meta := input.Get(_relatin_first)
-			s.HasMany(meta, w_key, relation)
-		} else {
-
-			//最后一个，直接比较
-			var filter = make([]interface{}, 0)
-			for _, sv := range s.SubGroup.Array() {
-				if s.CF(iv, sv) {
-					if s.Smf != nil {
-						_iv, _sv := s.Smf(iv, sv)
-
-						// 先把对应的 数组的元素父值替换掉
-						if this_key == "" {
-							s.Meta = _iv
-						} else {
-							_iv_key := this_key
-							s.Meta.Set(_iv_key, _iv.Value())
-						}
-
-						// s.Meta = _meta.String()
-						filter = append(filter, _sv.Value())
-					} else {
-						filter = append(filter, sv.Value())
-					}
+			matches := s.matchMany(iv)
+			filter := make([]interface{}, 0, len(matches))
+			for _, sv := range matches {
+				if s.Smf != nil {
+					_iv, _sv := s.Smf(iv, sv)
+					iv = _iv
+					s.Meta.Set(pathIndex(this_key, k), _iv.Value())
+					filter = append(filter, _sv.Value())
+				} else {
+					filter = append(filter, sv.Value())
 				}
 			}
-
-			s.Meta.Set(w_key, filter)
+			s.Meta.Set(wKey, filter)
 		}
-
+		return
 	}
 
-	return s
-
+	wKey := pathField(this_key, rel0)
+	if !last {
+		s.hasMany(input.Get(rel0), wKey, rest)
+		return
+	}
+	matches := s.matchMany(input)
+	filter := make([]interface{}, 0, len(matches))
+	for _, sv := range matches {
+		if s.Smf != nil {
+			_iv, _sv := s.Smf(input, sv)
+			if this_key == "" {
+				s.Meta = _iv
+			} else {
+				s.Meta.Set(this_key, _iv.Value())
+			}
+			filter = append(filter, _sv.Value())
+		} else {
+			filter = append(filter, sv.Value())
+		}
+	}
+	s.Meta.Set(wKey, filter)
 }

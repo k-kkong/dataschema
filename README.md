@@ -14,7 +14,7 @@
 ## 
 使用dvap ，可快捷加载嵌套的数据结构，实现动态的结构加载，可省去定义不同的结构体的内外键，解藕结构体防止互相引用，提升开发效率
 
-[参考文档：NewRelationLoader](https://pkg.go.dev/github.com/k-kkong/dataschema/dvap#NewRelationLoader)
+[参考文档：NewRelationLoader](https://pkg.go.dev/github.com/k-kkong/dataschema/dvap2#NewRelationLoader)
 
 ##
 任意切片数据处理，Map,Reduce,Find查找符合,take查找一个,Divide分割,Page翻页,Pop,remove,sort,判断....等许多操作，详细参考
