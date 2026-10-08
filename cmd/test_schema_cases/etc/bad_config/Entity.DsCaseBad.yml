@@ -1,0 +1,35 @@
+# ══════════════════════════════════════════════════════════════
+# 用例 22：配置写错到无法建表时，在解析阶段就终止
+# idx_missing 引用了一个根本没定义过的列 not_exist。
+#
+# 期望行为：直接报错并指出是哪个文件、哪张表、哪条索引、哪个列，
+# 而不是拼出一条非法 SQL 丢给数据库，让人对着 MySQL 的报错猜半天。
+#
+# 同类的硬错误还有：缺少 Table 节点、缺少表名、一个字段都没声明、
+# 主键列没在 id/fields 里定义、字段缺少 type、类型括号没闭合、
+# enum/set 没写取值列表、同一层重复定义配置项、索引名重复、
+# 普通索引写了 with_parser。
+# ══════════════════════════════════════════════════════════════
+Table:
+  type: entity
+  table: ds_case_bad
+  options:
+    charset: utf8mb4
+    collate: utf8mb4_general_ci
+    comment: 这份配置是故意写错的
+  id:
+    id:
+      type: integer unsigned
+      nullable: false
+      generator: AUTO_INCREMENT
+      comment: 主键
+  fields:
+    name:
+      type: varchar(32)
+      nullable: false
+      default: ''
+      comment: 名称
+  indexes:
+    idx_missing:
+      columns:
+        - not_exist                      # ← 这个字段不存在

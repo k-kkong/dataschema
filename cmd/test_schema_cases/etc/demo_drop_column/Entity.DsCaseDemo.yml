@@ -1,0 +1,62 @@
+# ══════════════════════════════════════════════════════════════
+# 用例 06：删除字段
+# 这一版把 remark 从 yml 里删掉了。
+#
+# 默认 DropPolicy 是 DropPolicyAlways，也就是"yml 里没有 = 数据库里也删掉"，
+# 不希望被删的字段，在 yml 里保留定义即可。
+# 删除属于破坏性变更，变更报告里会标红并计入"高危变更"数量。
+# 想只报告不删除，调用 SetDropPolicy(dataschema.DropPolicyNever) —— 见 keep_drop_less 用例。
+# ══════════════════════════════════════════════════════════════
+Table:
+  type: entity
+  table: ds_case_demo
+  options:
+    charset: utf8mb4
+    collate: utf8mb4_general_ci
+    comment: 用例主表（改过注释）
+  id:
+    id:
+      type: integer unsigned
+      nullable: false
+      generator: AUTO_INCREMENT
+      comment: 主键
+  fields:
+    name:
+      type: varchar(64)
+      nullable: true
+      default: ''
+      comment: 名称（改过注释）
+    nickname:
+      type: varchar(64)
+      nullable: false
+      default: ''
+      comment: 昵称
+    age:
+      type: bigint
+      nullable: false
+      default: 18
+      comment: 年龄
+    intro:
+      type: text
+      nullable: true
+      comment: 简介
+    created_at:
+      type: datetime
+      nullable: false
+      generator: DEFAULT CURRENT_TIMESTAMP
+      comment: 创建时间
+    updated_at:
+      type: datetime
+      nullable: false
+      generator: DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+      comment: 更新时间
+    # remark 已删除                        ← 本次改动
+  indexes:
+    idx_name:
+      columns:
+        - name
+  unique_indexes:
+    unq_name_age:
+      columns:
+        - name
+        - age

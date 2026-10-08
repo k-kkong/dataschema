@@ -1,0 +1,26 @@
+# ══════════════════════════════════════════════════════════════
+# 用例 23：表过滤与排除（filter_multi 目录下的第一张表）
+#
+# 这个目录放了 4 份配置：本层的 alpha/beta/gamma，以及 nested/ 下的 deep。
+# 用例 23 用 SetTableFilter + SetTableExclude 只同步其中两张；
+# 用例 24 再加上 SetRecursive，验证子目录里的配置会不会被扫到。
+# ══════════════════════════════════════════════════════════════
+Table:
+  type: entity
+  table: ds_case_f_alpha
+  options:
+    charset: utf8mb4
+    collate: utf8mb4_general_ci
+    comment: 过滤用例表 alpha
+  id:
+    id:
+      type: integer unsigned
+      nullable: false
+      generator: AUTO_INCREMENT
+      comment: 主键
+  fields:
+    name:
+      type: varchar(32)
+      nullable: false
+      default: ''
+      comment: 名称

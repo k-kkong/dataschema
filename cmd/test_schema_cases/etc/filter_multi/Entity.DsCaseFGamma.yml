@@ -1,0 +1,23 @@
+# ══════════════════════════════════════════════════════════════
+# 用例 23：表过滤与排除（filter_multi 目录下的第三张表）
+# 这张表会被 SetTableExclude 排除掉，所以用例 23 跑完它不该存在。
+# ══════════════════════════════════════════════════════════════
+Table:
+  type: entity
+  table: ds_case_f_gamma
+  options:
+    charset: utf8mb4
+    collate: utf8mb4_general_ci
+    comment: 过滤用例表 gamma（应被排除）
+  id:
+    id:
+      type: integer unsigned
+      nullable: false
+      generator: AUTO_INCREMENT
+      comment: 主键
+  fields:
+    name:
+      type: varchar(32)
+      nullable: false
+      default: ''
+      comment: 名称

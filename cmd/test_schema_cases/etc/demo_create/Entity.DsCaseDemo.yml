@@ -1,0 +1,54 @@
+# ══════════════════════════════════════════════════════════════
+# 用例 01：建表
+# 库里没有 ds_case_demo，整张表按 yml 声明创建。
+#
+# 建表的列顺序 = id 区在前、fields 区在后，各自保持这里的书写顺序，
+# 可以打开数据库用 SHOW CREATE TABLE ds_case_demo 对照确认。
+# ══════════════════════════════════════════════════════════════
+Table:
+  type: entity
+  table: ds_case_demo
+  options:
+    charset: utf8mb4
+    collate: utf8mb4_general_ci
+    comment: 用例主表
+  id:                                    # 主键区，至少一个字段
+    id:
+      type: integer unsigned             # 等价于 int(10) unsigned
+      nullable: false
+      generator: AUTO_INCREMENT
+      comment: 主键
+  fields:                                # 普通字段区
+    name:
+      type: varchar(32)
+      nullable: false
+      default: ''
+      comment: 名称
+    age:
+      type: integer                      # 等价于 int(11)
+      nullable: false
+      default: 0
+      comment: 年龄
+    intro:
+      type: text                         # text 不允许字面默认值
+      nullable: true
+      comment: 简介
+    created_at:
+      type: datetime
+      nullable: false
+      generator: DEFAULT CURRENT_TIMESTAMP
+      comment: 创建时间
+    updated_at:
+      type: datetime
+      nullable: false
+      generator: DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+      comment: 更新时间
+  indexes:                               # 普通索引
+    idx_name:
+      columns:
+        - name
+  unique_indexes:                        # 唯一索引
+    unq_name_age:
+      columns:
+        - name
+        - age

@@ -1,0 +1,32 @@
+# ══════════════════════════════════════════════════════════════
+# 用例 18：分表（sharding_tables）
+# 一份定义展开成多张物理表：ds_case_shard_01 / ds_case_shard_02。
+# 注意声明的表名 ds_case_shard 本身不会被创建，只有列出来的分表会建。
+#
+# 分表名支持逗号分隔，两边有空格也没关系。
+# 变更报告里每张分表是独立的一条记录，各自带自己的表名。
+# ══════════════════════════════════════════════════════════════
+Table:
+  type: entity
+  table: ds_case_shard
+  sharding_tables: ds_case_shard_01, ds_case_shard_02
+  options:
+    charset: utf8mb4
+    collate: utf8mb4_general_ci
+    comment: 分表用例表
+  id:
+    id:
+      type: integer unsigned
+      nullable: false
+      generator: AUTO_INCREMENT
+      comment: 主键
+  fields:
+    biz_no:
+      type: varchar(64)
+      nullable: false
+      default: ''
+      comment: 业务编号
+  unique_indexes:
+    unq_biz_no:
+      columns:
+        - biz_no

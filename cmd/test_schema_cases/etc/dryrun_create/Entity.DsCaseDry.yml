@@ -1,0 +1,37 @@
+# ══════════════════════════════════════════════════════════════
+# 用例 20：DryRun + 导出 SQL（用例 25 的迁移历史也复用这份配置）
+# 这张表根本不会被创建：跑的时候设置了 SetDryRun(true)，
+# 只做"解析 -> 比对 -> 生成 SQL -> 打印变更报告"，一条都不执行。
+# 同时用 SetSqlExportPath 把 SQL 导出到文件，交给 DBA 走审核流程。
+#
+# 典型用法：发布前在 CI 里跑一次 DryRun，
+# 用 VerifyIsCleanSchema() 判断线上库结构是否与配置一致。
+# ══════════════════════════════════════════════════════════════
+Table:
+  type: entity
+  table: ds_case_dry
+  options:
+    charset: utf8mb4
+    collate: utf8mb4_general_ci
+    comment: DryRun 用例表（不会被真的创建）
+  id:
+    id:
+      type: integer unsigned
+      nullable: false
+      generator: AUTO_INCREMENT
+      comment: 主键
+  fields:
+    title:
+      type: varchar(128)
+      nullable: false
+      default: ''
+      comment: 标题
+    status:
+      type: enum('draft','published')    # 枚举取值大小写会原样保留
+      nullable: false
+      default: draft
+      comment: 状态
+  indexes:
+    idx_status:
+      columns:
+        - status

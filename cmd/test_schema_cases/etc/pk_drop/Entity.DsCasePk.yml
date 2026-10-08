@@ -1,0 +1,32 @@
+# ══════════════════════════════════════════════════════════════
+# 用例 12：删除主键
+# primary_indexes 声明了但 columns 为空，表示"这张表不要主键"。
+# 生成：ALTER TABLE `ds_case_pk` DROP PRIMARY KEY;
+#
+# 解析阶段会同时给出一条告警，提醒这是有意为之还是漏写了列名。
+# 真实业务里几乎不该这么用，这里只是为了把主键分支覆盖完整。
+# ══════════════════════════════════════════════════════════════
+Table:
+  type: entity
+  table: ds_case_pk
+  options:
+    charset: utf8mb4
+    collate: utf8mb4_general_ci
+    comment: 主键用例表
+  primary_indexes:
+    columns: []                          # ← 空主键 = 删掉主键
+  id:
+    tenant_id:
+      type: integer unsigned
+      nullable: false
+      comment: 租户
+    id:
+      type: integer unsigned
+      nullable: false
+      comment: 业务主键
+  fields:
+    name:
+      type: varchar(32)
+      nullable: false
+      default: ''
+      comment: 名称

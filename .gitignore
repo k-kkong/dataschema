@@ -16,3 +16,9 @@
 /private/*
 .vscode*
 *DS_Store*
+
+# cmd/test_schema_cases 跑用例时生成的导出文件（SQL、编译产物）
+/cmd/test_schema_cases/out/
+
+# go build 在仓库根目录留下的可执行文件
+/verify_baseline

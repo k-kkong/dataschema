@@ -1,0 +1,64 @@
+# ══════════════════════════════════════════════════════════════
+# 用例 07：索引的增、删、改，一次覆盖
+#   删掉唯一索引 unq_name_age          -> DROP INDEX
+#   idx_name 的列 (name) -> (name,age) -> DROP INDEX + CREATE INDEX（重建）
+#   新增普通索引 idx_created_at        -> CREATE INDEX
+#
+# 索引是"结构化比较"的：只比名字、类型（普通/唯一/全文）和列清单。
+# yml 里多写一个不参与建索引的配置项不会被当成差异，
+# 所以同一份配置反复执行不会把索引 drop 了再 create 一遍。
+#
+# 执行顺序是固定的：先建/改，最后再删，避免中途出现"没有索引可用"的窗口。
+# ══════════════════════════════════════════════════════════════
+Table:
+  type: entity
+  table: ds_case_demo
+  options:
+    charset: utf8mb4
+    collate: utf8mb4_general_ci
+    comment: 用例主表（改过注释）
+  id:
+    id:
+      type: integer unsigned
+      nullable: false
+      generator: AUTO_INCREMENT
+      comment: 主键
+  fields:
+    name:
+      type: varchar(64)
+      nullable: true
+      default: ''
+      comment: 名称（改过注释）
+    nickname:
+      type: varchar(64)
+      nullable: false
+      default: ''
+      comment: 昵称
+    age:
+      type: bigint
+      nullable: false
+      default: 18
+      comment: 年龄
+    intro:
+      type: text
+      nullable: true
+      comment: 简介
+    created_at:
+      type: datetime
+      nullable: false
+      generator: DEFAULT CURRENT_TIMESTAMP
+      comment: 创建时间
+    updated_at:
+      type: datetime
+      nullable: false
+      generator: DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+      comment: 更新时间
+  indexes:
+    idx_name:
+      columns:
+        - name
+        - age                            # ← 索引列变了，会重建
+    idx_created_at:                      # ← 新增普通索引
+      columns:
+        - created_at
+  # unique_indexes 整段删掉了            # ← 唯一索引 unq_name_age 会被 DROP

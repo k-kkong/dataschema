@@ -1,0 +1,58 @@
+# ══════════════════════════════════════════════════════════════
+# 用例 09：删除索引
+# 这一版删掉了 ft_intro（全文）与 idx_created_at（普通），只留 idx_name。
+# 两条都是 DROP INDEX，都属于破坏性变更。
+#
+# 补充：SPATIAL / HASH 这类不在维护范围内的索引，工具永远不会去删它，
+# 只会在变更报告里以"跳过"的形式提示一句，避免误伤。
+# ══════════════════════════════════════════════════════════════
+Table:
+  type: entity
+  table: ds_case_demo
+  options:
+    charset: utf8mb4
+    collate: utf8mb4_general_ci
+    comment: 用例主表（改过注释）
+  id:
+    id:
+      type: integer unsigned
+      nullable: false
+      generator: AUTO_INCREMENT
+      comment: 主键
+  fields:
+    name:
+      type: varchar(64)
+      nullable: true
+      default: ''
+      comment: 名称（改过注释）
+    nickname:
+      type: varchar(64)
+      nullable: false
+      default: ''
+      comment: 昵称
+    age:
+      type: bigint
+      nullable: false
+      default: 18
+      comment: 年龄
+    intro:
+      type: text
+      nullable: true
+      comment: 简介
+    created_at:
+      type: datetime
+      nullable: false
+      generator: DEFAULT CURRENT_TIMESTAMP
+      comment: 创建时间
+    updated_at:
+      type: datetime
+      nullable: false
+      generator: DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+      comment: 更新时间
+  indexes:
+    idx_name:
+      columns:
+        - name
+        - age
+    # idx_created_at 已删除              # ← 本次改动
+  # fulltext_indexes 整段删掉了          # ← ft_intro 会被 DROP

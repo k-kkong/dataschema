@@ -1,0 +1,36 @@
+# ══════════════════════════════════════════════════════════════
+# 用例 10：主键（建表时就显式声明 primary_indexes）
+#
+# 只有显式写了 primary_indexes，工具才会维护主键；
+# 只写 id 区的情况下主键由建表语句决定，之后不再变更
+# （如果这时库里的主键与 id 区推导结果不一致，只会在报告里"跳过"提示一句）。
+#
+# 这张表故意不用 AUTO_INCREMENT：MySQL 不允许删掉自增列所在的唯一键，
+# 带自增列的表执行 DROP PRIMARY KEY 会直接报 1075。
+# ══════════════════════════════════════════════════════════════
+Table:
+  type: entity
+  table: ds_case_pk
+  options:
+    charset: utf8mb4
+    collate: utf8mb4_general_ci
+    comment: 主键用例表
+  primary_indexes:
+    columns:
+      - tenant_id
+      - id
+  id:
+    tenant_id:
+      type: integer unsigned
+      nullable: false
+      comment: 租户
+    id:
+      type: integer unsigned
+      nullable: false
+      comment: 业务主键
+  fields:
+    name:
+      type: varchar(32)
+      nullable: false
+      default: ''
+      comment: 名称

@@ -2,21 +2,34 @@ package dataschema
 
 import (
 	"bufio"
-	"encoding/json"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path"
-
+	"path/filepath"
+	"sort"
 	"strings"
+	"time"
 
-	"gopkg.in/yaml.v3"
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
 
 	"github.com/k-kkong/dataschema/information_schema"
 	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
 )
+
+// yml 中删掉的字段与索引该如何处理
+const (
+	// DropPolicyAlways 默认值：yml 里删掉的字段/索引，数据库里同步 DROP。
+	// 不希望某个字段被删除时，在 yml 中保留它的定义即可。
+	DropPolicyAlways = "always"
+	// DropPolicyNever 从不执行 DROP，只在变更报告中提示差异
+	DropPolicyNever = "never"
+)
+
+// DefaultMigrationTable 结构变更执行记录表的默认表名
+const DefaultMigrationTable = "dataschema_migrations"
 
 type YamlToSqlHandler struct {
 	IsOutputBuildSchema      bool   // 是否输出编译后的结构
@@ -29,9 +42,38 @@ type YamlToSqlHandler struct {
 
 	YamlPath          string //yaml文件路径
 	yamlFileFullPaths []string
-	tables            []string
 
-	sql []string
+	// schemas/results/sql 三者长度始终一致、下标一一对应。
+	// 配置了 sharding_tables 时一份定义会展开成多张物理表，
+	// 三个切片必须同步 append，否则下标错位会打印错表名甚至数组越界。
+	schemas []*ymlTable
+	results []tableResult
+	sql     []string
+
+	states   map[string]*dbTableState // 表名 -> 数据库现状
+	changes  []SchemaChange           // 全部变更记录，含被跳过的
+	warnings []string                 // 解析阶段的告警
+
+	recursive         bool     // 是否递归扫描子目录
+	tableInclude      []string // 只同步匹配的表，空表示全部
+	tableExclude      []string // 排除匹配的表
+	dropPolicy        string   // 见 DropPolicy* 常量
+	keepColumnOrder   bool     // 新增列时是否按 yml 顺序落位
+	syncCharset       bool     // 是否同步表字符集
+	dryRun            bool     // 只生成不执行
+	sqlExportPath     string   // 把生成的 SQL 导出到文件
+	migrationHistory  bool     // 是否记录已执行的 SQL
+	migrationTable    string   // 执行记录表名
+	executedSqlHashes map[string]bool
+	failedSQL         string // 执行失败的 SQL
+}
+
+// tableResult 一张表的比对结果
+type tableResult struct {
+	table   string
+	source  string
+	sql     string
+	changes []SchemaChange
 }
 
 // NewYamlToSqlHandler 创建表结构维护器
@@ -40,6 +82,9 @@ func NewYamlToSqlHandler() *YamlToSqlHandler {
 		IsOutputBuildSchema:      false,
 		IsEncryOutputBuildSchema: false,
 		BuildSchemaDest:          "./dataschema.value",
+		dropPolicy:               DropPolicyAlways,
+		keepColumnOrder:          true,
+		migrationTable:           DefaultMigrationTable,
 	}
 }
 
@@ -89,108 +134,279 @@ func (ts *YamlToSqlHandler) SetBuildSchemaDest(dest string) *YamlToSqlHandler {
 	return ts
 }
 
-func (ts *YamlToSqlHandler) getyamlFileFullPaths() *YamlToSqlHandler {
-
-	files, err := os.ReadDir(ts.YamlPath)
-	if err != nil {
-		fmt.Println(err)
-	}
-	for _, f := range files {
-		// fmt.Println(f.Name())
-		filename := string(f.Name())
-		if strings.Contains(filename, ".yml") {
-			filename = fmt.Sprintf("%s%s", ts.YamlPath, filename)
-			ts.yamlFileFullPaths = append(ts.yamlFileFullPaths, filename)
-			// fmt.Println(ts.yamlFileFullPaths)
-		}
-	}
-
+// SetRecursive 设置是否递归扫描子目录下的配置文件，默认只扫描 YamlPath 本层
+func (ts *YamlToSqlHandler) SetRecursive(recursive bool) *YamlToSqlHandler {
+	ts.recursive = recursive
 	return ts
+}
+
+// SetTableFilter 设置只同步哪些表，支持 * ? 通配符；不设置表示全部同步
+func (ts *YamlToSqlHandler) SetTableFilter(patterns ...string) *YamlToSqlHandler {
+	ts.tableInclude = patterns
+	return ts
+}
+
+// SetTableExclude 设置排除哪些表，支持 * ? 通配符
+func (ts *YamlToSqlHandler) SetTableExclude(patterns ...string) *YamlToSqlHandler {
+	ts.tableExclude = patterns
+	return ts
+}
+
+// SetDropPolicy 设置 yml 中删掉的字段/索引如何处理。
+// 默认 DropPolicyAlways；设为 DropPolicyNever 则只报告不删除。
+func (ts *YamlToSqlHandler) SetDropPolicy(policy string) *YamlToSqlHandler {
+	switch strings.ToLower(strings.TrimSpace(policy)) {
+	case DropPolicyNever:
+		ts.dropPolicy = DropPolicyNever
+	default:
+		ts.dropPolicy = DropPolicyAlways
+	}
+	return ts
+}
+
+// SetKeepColumnOrder 设置新增列时是否按 yml 声明的顺序落位（生成 AFTER/FIRST）。
+// 默认开启；已存在的列不会被重排，因为重排会触发整表重建。
+func (ts *YamlToSqlHandler) SetKeepColumnOrder(keep bool) *YamlToSqlHandler {
+	ts.keepColumnOrder = keep
+	return ts
+}
+
+// SetSyncTableCharset 设置表字符集/排序规则与 yml 不一致时是否真的执行同步。
+// 默认关闭（只在报告中提示），因为 CONVERT TO CHARACTER SET 会重写整表数据，
+// 大表上属于高危操作，需要使用者显式开启。
+func (ts *YamlToSqlHandler) SetSyncTableCharset(sync bool) *YamlToSqlHandler {
+	ts.syncCharset = sync
+	return ts
+}
+
+// SetDryRun 设置只生成 SQL 不执行，配合 GetSql/GetChangeReport 做发布前检查
+func (ts *YamlToSqlHandler) SetDryRun(dryRun bool) *YamlToSqlHandler {
+	ts.dryRun = dryRun
+	return ts
+}
+
+// SetSqlExportPath 设置把生成的 SQL 导出到文件，便于走 DBA 审核流程
+func (ts *YamlToSqlHandler) SetSqlExportPath(dest string) *YamlToSqlHandler {
+	ts.sqlExportPath = dest
+	return ts
+}
+
+// SetMigrationHistory 设置是否记录已执行过的 SQL（按语句指纹去重）。
+// 开启后重复执行会自动跳过已成功的语句，失败重跑时具备断点续跑能力。默认关闭。
+func (ts *YamlToSqlHandler) SetMigrationHistory(enable bool, tableName string) *YamlToSqlHandler {
+	ts.migrationHistory = enable
+	if strings.TrimSpace(tableName) != "" {
+		ts.migrationTable = strings.TrimSpace(tableName)
+	}
+	return ts
+}
+
+// GetSql 获取需要执行的sql
+func (ts *YamlToSqlHandler) GetSql() []string {
+	return ts.sql
+}
+
+// GetChangeReport 获取结构变更记录，包含因 DropPolicy 等原因被跳过的项
+func (ts *YamlToSqlHandler) GetChangeReport() []SchemaChange {
+	return ts.changes
+}
+
+// GetWarnings 获取配置文件解析阶段的告警
+func (ts *YamlToSqlHandler) GetWarnings() []string {
+	return ts.warnings
+}
+
+// GetFailedSql 获取执行失败的 SQL
+func (ts *YamlToSqlHandler) GetFailedSql() string {
+	return ts.failedSQL
+}
+
+// GetTables 获取本次参与同步的表名
+func (ts *YamlToSqlHandler) GetTables() []string {
+	names := make([]string, 0, len(ts.schemas))
+	for _, t := range ts.schemas {
+		names = append(names, t.Name)
+	}
+	return names
+}
+
+func (ts *YamlToSqlHandler) getyamlFileFullPaths() *YamlToSqlHandler {
+	ts.yamlFileFullPaths = nil
+	// 递归遍历需要用 var 先声明，否则函数字面量里引用不到自己
+	var walk func(dir string) error
+	walk = func(dir string) error {
+		files, err := os.ReadDir(dir)
+		if err != nil {
+			return err
+		}
+		for _, f := range files {
+			full := filepath.Join(dir, f.Name())
+			if f.IsDir() {
+				if ts.recursive {
+					if err := walk(full); err != nil {
+						return err
+					}
+				}
+				continue
+			}
+			lower := strings.ToLower(f.Name())
+			// 按后缀精确匹配，.yml 与 .yaml 都认，
+			// a.yml.bak 这类备份文件不会被误当成配置读进来。
+			if !strings.HasSuffix(lower, ".yml") && !strings.HasSuffix(lower, ".yaml") {
+				continue
+			}
+			ts.yamlFileFullPaths = append(ts.yamlFileFullPaths, full)
+		}
+		return nil
+	}
+	// 读取目录失败直接终止：继续往下跑只会得到一份空的表清单，
+	// 最终报出来的错误与真实原因无关，排查成本很高。
+	if err := walk(ts.YamlPath); err != nil {
+		fmt.Printf("\x1b[%dm 读取配置文件目录 %s 失败: %s \x1b[0m\n", 31, ts.YamlPath, err.Error())
+		panic(fmt.Sprintf("读取配置文件目录 %s 失败: %s", ts.YamlPath, err.Error()))
+	}
+	sort.Strings(ts.yamlFileFullPaths)
+	return ts
+}
+
+// parsedDoc 一份配置文件解析出来的结果
+type parsedDoc struct {
+	table  *ymlTable
+	source string
 }
 
 func (ts *YamlToSqlHandler) getYamlDatas() *YamlToSqlHandler {
-	var buildmapping = map[string]interface{}{}
-	for _, v := range ts.yamlFileFullPaths {
-
-		yamlFile, err := os.ReadFile(v)
-		if err != nil {
-			fmt.Println(err.Error())
-		}
-		table := map[string]interface{}{}
-		err = yaml.Unmarshal(yamlFile, &table)
-		if err != nil {
-			fmt.Println(err.Error())
-		}
-		jb, err := json.Marshal(&table)
-
-		tvalue := string(jb)
-		tname := gjson.Parse(tvalue).Get("Table.table").String()
-		if _, ok := buildmapping[tname]; ok {
-			fmt.Printf("\x1b[%dm配置文件: %s 序列化失败，重复定义的表 \x1b[0m\n", 31, v)
-			panic(fmt.Sprintf("\x1b[%dm配置文件: %s 序列化失败\x1b[0m\n", 31, v))
-		}
-
-		sharding_tables := gjson.Parse(tvalue).Get("Table.sharding_tables").String()
-		if sharding_tables != "" {
-			for _, sharding_name := range strings.Split(sharding_tables, ",") {
-				if sharding_name == "" {
-					continue
-				}
-				sharding_tblv, _ := sjson.Set(tvalue, "Table.table", sharding_name)
-				ts.tables = append(ts.tables, sharding_tblv)
-			}
-		} else {
-			ts.tables = append(ts.tables, tvalue)
-		}
-		buildmapping[tname] = table
-		// t, err := json.Marshal(&table)
-		// fmt.Println("json:", string(jb))
-		if err != nil {
-			fmt.Printf("\x1b[%dm配置文件: %s 序列化失败\x1b[0m\n", 31, v)
-			panic(fmt.Sprintf("\x1b[%dm配置文件: %s 序列化失败\x1b[0m\n", 31, v))
-		}
-
-	}
-
-	if ts.IsOutputBuildSchema {
-		jb, err := json.Marshal(&buildmapping)
-		if err != nil {
-			fmt.Printf("\x1b[%dm 序列化编译产物失败 \x1b[0m\n", 31)
-			panic(fmt.Sprintf("\x1b[%dm 序列化编译产物失败 \x1b[0m\n", 31))
-		}
-
-		bvalue := string(jb)
-		if ts.IsEncryOutputBuildSchema {
-			bvalue, err = EncryptString(bvalue, []byte(ts.EncryKey))
-			if err != nil {
-				fmt.Printf("\x1b[%dm 序列化编译产物加密失败: %s \x1b[0m\n", 31, err.Error())
-				panic(fmt.Sprintf("\x1b[%dm 序列化编译产物加密失败: %s \x1b[0m\n", 31, err.Error()))
-			}
-		}
-
-		os.MkdirAll(path.Dir(ts.BuildSchemaDest), os.ModePerm)
-		file, err := os.Create(ts.BuildSchemaDest)
-		if err != nil {
-			fmt.Printf("\x1b[%dm 序列化产物写入失败 \x1b[0m\n", 31)
-			panic(fmt.Sprintf("\x1b[%dm 序列化产物写入失败 %s \x1b[0m\n", 31, err.Error()))
-		}
-		defer file.Close()
-
-		writer := bufio.NewWriter(file)
-		_, err = fmt.Fprint(writer, bvalue)
-		if err != nil {
-			fmt.Printf("\x1b[%dm 序列化编译产物写入失败 %s\x1b[0m\n", 31, err.Error())
-			panic(fmt.Sprintf("\x1b[%dm 序列化编译产物写入失败 %s \x1b[0m\n", 31, err.Error()))
-		}
-		writer.Flush()
-
-	}
-
+	docs := ts.parseYamlFiles(ts.yamlFileFullPaths)
+	ts.collectTables(docs)
 	return ts
 }
 
-func (ts *YamlToSqlHandler) loadFromBuildSchema() *YamlToSqlHandler {
+// parseYamlFiles 解析配置文件并输出编译产物
+func (ts *YamlToSqlHandler) parseYamlFiles(paths []string) []parsedDoc {
+	docs := make([]parsedDoc, 0, len(paths))
+	declared := map[string]string{}
+	for _, p := range paths {
+		data, err := os.ReadFile(p)
+		if err != nil {
+			ts.failParse(p, err)
+		}
+		docJSON, err := yamlFileToOrderedJSON(data)
+		if err != nil {
+			ts.failParse(p, err)
+		}
+		tbl, warns, err := parseTableDoc(docJSON, p)
+		if err != nil {
+			ts.failParse(p, err)
+		}
+		for _, w := range warns {
+			ts.warnings = append(ts.warnings, fmt.Sprintf("%s: %s", p, w))
+		}
+		if prev, ok := declared[tbl.DeclaredName]; ok {
+			fmt.Printf("\x1b[%dm配置文件: %s 序列化失败，重复定义的表（已存在于 %s） \x1b[0m\n", 31, p, prev)
+			panic(fmt.Sprintf("\x1b[%dm配置文件: %s 序列化失败\x1b[0m\n", 31, p))
+		}
+		declared[tbl.DeclaredName] = p
+		docs = append(docs, parsedDoc{table: tbl, source: p})
+	}
+	if ts.IsOutputBuildSchema {
+		ts.writeBuildSchema(docs)
+	}
+	return docs
+}
 
+func (ts *YamlToSqlHandler) failParse(p string, err error) {
+	fmt.Printf("\x1b[%dm配置文件: %s 序列化失败: %s\x1b[0m\n", 31, p, err.Error())
+	panic(fmt.Sprintf("\x1b[%dm配置文件: %s 序列化失败: %s\x1b[0m\n", 31, p, err.Error()))
+}
+
+// writeBuildSchema 输出编译产物。
+// 顶层形状是 {"表名": 文档JSON}，loadFromBuildSchema 按这个形状回读；
+// 文档内部保留了 yml 的书写顺序，所以字段顺序可以稳定还原。
+func (ts *YamlToSqlHandler) writeBuildSchema(docs []parsedDoc) {
+	sorted := make([]*ymlTable, 0, len(docs))
+	for _, d := range docs {
+		sorted = append(sorted, d.table)
+	}
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].DeclaredName < sorted[j].DeclaredName })
+
+	content, err := buildSchemaJSON(sorted)
+	if err != nil {
+		fmt.Printf("\x1b[%dm 序列化编译产物失败 \x1b[0m\n", 31)
+		panic(fmt.Sprintf("\x1b[%dm 序列化编译产物失败 \x1b[0m\n", 31))
+	}
+	if ts.IsEncryOutputBuildSchema {
+		content, err = EncryptString(content, []byte(ts.EncryKey))
+		if err != nil {
+			fmt.Printf("\x1b[%dm 序列化编译产物加密失败: %s \x1b[0m\n", 31, err.Error())
+			panic(fmt.Sprintf("\x1b[%dm 序列化编译产物加密失败: %s \x1b[0m\n", 31, err.Error()))
+		}
+	}
+	if dir := path.Dir(ts.BuildSchemaDest); dir != "" {
+		os.MkdirAll(dir, os.ModePerm)
+	}
+	file, err := os.Create(ts.BuildSchemaDest)
+	if err != nil {
+		fmt.Printf("\x1b[%dm 序列化产物写入失败 \x1b[0m\n", 31)
+		panic(fmt.Sprintf("\x1b[%dm 序列化产物写入失败 %s \x1b[0m\n", 31, err.Error()))
+	}
+	defer file.Close()
+
+	writer := bufio.NewWriter(file)
+	if _, err = fmt.Fprint(writer, content); err != nil {
+		fmt.Printf("\x1b[%dm 序列化编译产物写入失败 %s\x1b[0m\n", 31, err.Error())
+		panic(fmt.Sprintf("\x1b[%dm 序列化编译产物写入失败 %s \x1b[0m\n", 31, err.Error()))
+	}
+	if err = writer.Flush(); err != nil {
+		fmt.Printf("\x1b[%dm 序列化编译产物写入失败 %s\x1b[0m\n", 31, err.Error())
+		panic(fmt.Sprintf("\x1b[%dm 序列化编译产物写入失败 %s \x1b[0m\n", 31, err.Error()))
+	}
+}
+
+// collectTables 展开分表并套用表名过滤，填充 schemas
+func (ts *YamlToSqlHandler) collectTables(docs []parsedDoc) {
+	ts.schemas = nil
+	seen := map[string]string{}
+	for _, d := range docs {
+		for _, tbl := range d.table.expandSharding() {
+			if !ts.matchTable(tbl.Name) {
+				continue
+			}
+			if prev, ok := seen[tbl.Name]; ok {
+				fmt.Printf("\x1b[%dm配置文件: %s 序列化失败，重复定义的表 %s（已存在于 %s） \x1b[0m\n", 31, d.source, tbl.Name, prev)
+				panic(fmt.Sprintf("\x1b[%dm配置文件: %s 序列化失败\x1b[0m\n", 31, d.source))
+			}
+			seen[tbl.Name] = d.source
+			ts.schemas = append(ts.schemas, tbl)
+		}
+	}
+}
+
+// matchTable 判断表名是否落在过滤条件内
+func (ts *YamlToSqlHandler) matchTable(name string) bool {
+	matchAny := func(patterns []string) bool {
+		for _, p := range patterns {
+			if p == "" {
+				continue
+			}
+			if p == name {
+				return true
+			}
+			if ok, err := path.Match(p, name); err == nil && ok {
+				return true
+			}
+		}
+		return false
+	}
+	if len(ts.tableExclude) > 0 && matchAny(ts.tableExclude) {
+		return false
+	}
+	if len(ts.tableInclude) > 0 {
+		return matchAny(ts.tableInclude)
+	}
+	return true
+}
+
+func (ts *YamlToSqlHandler) loadFromBuildSchema() *YamlToSqlHandler {
 	bvalue, err := os.ReadFile(ts.BuildSchemaDest)
 	if err != nil {
 		fmt.Printf("\x1b[%dm 序列化编译产物读取失败 \x1b[0m\n", 31)
@@ -205,352 +421,378 @@ func (ts *YamlToSqlHandler) loadFromBuildSchema() *YamlToSqlHandler {
 			panic(fmt.Sprintf("\x1b[%dm 序列化编译产物解密失败 \x1b[0m\n", 31))
 		}
 	}
-	gjson.Parse(bvaluestr).ForEach(func(key, value gjson.Result) bool {
-		sharding_tables := value.Get("Table.sharding_tables").String()
-		_value := value.String()
-		if sharding_tables != "" {
-			for _, sharding_name := range strings.Split(sharding_tables, ",") {
-				if sharding_name == "" {
-					continue
-				}
-				sharding_tblv, _ := sjson.Set(_value, "Table.table", sharding_name)
-				ts.tables = append(ts.tables, sharding_tblv)
-			}
-		} else {
-			ts.tables = append(ts.tables, value.String())
-		}
+	root := gjson.Parse(bvaluestr)
+	if !root.IsObject() {
+		fmt.Printf("\x1b[%dm 序列化编译产物格式不正确 \x1b[0m\n", 31)
+		panic("序列化编译产物格式不正确")
+	}
+
+	type docItem struct {
+		name string
+		raw  string
+	}
+	var items []docItem
+	root.ForEach(func(key, value gjson.Result) bool {
+		items = append(items, docItem{name: key.String(), raw: value.Raw})
 		return true
 	})
+	// gjson 遍历对象的顺序取决于产物文本本身的键顺序，
+	// 这里显式按表名排序，让处理顺序与输出都稳定可复现。
+	sort.Slice(items, func(i, j int) bool { return items[i].name < items[j].name })
 
+	docs := make([]parsedDoc, 0, len(items))
+	for _, item := range items {
+		tbl, warns, err := parseTableDoc(item.raw, ts.BuildSchemaDest)
+		if err != nil {
+			fmt.Printf("\x1b[%dm 序列化编译产物中的表 %s 解析失败: %s \x1b[0m\n", 31, item.name, err.Error())
+			panic(fmt.Sprintf("\x1b[%dm 序列化编译产物中的表 %s 解析失败\x1b[0m\n", 31, item.name))
+		}
+		for _, w := range warns {
+			ts.warnings = append(ts.warnings, fmt.Sprintf("%s: %s", item.name, w))
+		}
+		docs = append(docs, parsedDoc{table: tbl, source: ts.BuildSchemaDest})
+	}
+	ts.collectTables(docs)
+	return ts
+}
+
+// loadDBSnapshot 一次性把本次涉及的表的现状全部读出来。
+// 三条查询覆盖本次涉及的全部表（TABLES / COLUMNS / STATISTICS），往返次数与表的数量无关。
+func (ts *YamlToSqlHandler) loadDBSnapshot() *YamlToSqlHandler {
+	ts.states = map[string]*dbTableState{}
+	names := make([]string, 0, len(ts.schemas))
+	for _, t := range ts.schemas {
+		names = append(names, t.Name)
+	}
+	if len(names) == 0 {
+		return ts
+	}
+	stateOf := func(name string) *dbTableState {
+		st, ok := ts.states[name]
+		if !ok {
+			st = newDBTableState(name)
+			ts.states[name] = st
+		}
+		return st
+	}
+
+	var tables []information_schema.SqlTable
+	ts.db.Table("INFORMATION_SCHEMA.TABLES").
+		Select("TABLE_NAME,TABLE_COMMENT,TABLE_COLLATION").
+		Where("TABLE_SCHEMA=database()").
+		Where("TABLE_NAME IN ?", names).
+		Find(&tables)
+	for _, tb := range tables {
+		st := stateOf(tb.TableName)
+		st.Exists = true
+		st.Comment = tb.TableComment
+		st.Collation = tb.TableCollation
+	}
+
+	var columns []information_schema.SqlTableColumns
+	ts.db.Table("`INFORMATION_SCHEMA`.`COLUMNS`").
+		Where("TABLE_SCHEMA=database()").
+		Where("TABLE_NAME IN ?", names).
+		Order("TABLE_NAME, ORDINAL_POSITION").
+		Find(&columns)
+	// 已按 TABLE_NAME, ORDINAL_POSITION 排序，这里换成每张表各自的序号
+	lastTable, pos := "", 0
+	for _, sc := range columns {
+		if sc.TableName != lastTable {
+			lastTable, pos = sc.TableName, 0
+		}
+		col := &dbColumn{
+			Name:     sc.ColumnName,
+			Decl:     getTypeYml2SqlMapping(sc.ColumnType),
+			Nullable: strings.ToLower(sc.IsNullable) == "yes",
+			Comment:  sc.ColumnComment,
+			Extra:    sc.Extra,
+			Position: pos,
+		}
+		pos++
+		if sc.ColumnDefault != nil {
+			col.DefaultSet = true
+			col.Default = *sc.ColumnDefault
+		}
+		stateOf(sc.TableName).addColumn(col)
+	}
+
+	var indexes []information_schema.SqlIndexes
+	ts.db.Table("`INFORMATION_SCHEMA`.`STATISTICS`").
+		Select("TABLE_NAME AS Table_name, NON_UNIQUE AS Non_unique, INDEX_NAME AS Key_name, "+
+			"SEQ_IN_INDEX AS Seq_in_index, COLUMN_NAME AS Column_name, INDEX_TYPE AS Index_type").
+		Where("TABLE_SCHEMA=database()").
+		Where("TABLE_NAME IN ?", names).
+		Order("TABLE_NAME, INDEX_NAME, SEQ_IN_INDEX").
+		Find(&indexes)
+	for _, si := range indexes {
+		stateOf(si.Table_name).addIndexColumn(si.Key_name, si.Column_name, si.IndexType, si.Non_unique)
+	}
 	return ts
 }
 
 func (ts *YamlToSqlHandler) doSchema() *YamlToSqlHandler {
-	// fmt.Println(ts.tables)
-
-	for i, tbl := range ts.tables {
-		// sql := ""
-		tbJson := gjson.Get(tbl, "Table")
-
-		//primary field
-		var tbljsonv = tbJson.String()
-		tbJson.Get("id").ForEach(func(key, value gjson.Result) bool {
-			if tbJson.Get("fields." + key.String()).Exists() {
-				panic("主键字段和普通字段重名")
-			}
-			tbljsonv, _ = sjson.Set(tbljsonv, "fields."+key.String(), value.Value())
-			return true
-		})
-		tbJson = gjson.Parse(tbljsonv)
-
-		if tbJson.Exists() {
-			tname := tbJson.Get("table")
-			// fmt.Println(tname)
-			if tname.Exists() {
-				var sqlTbl information_schema.SqlTable
-				ts.db.Table("INFORMATION_SCHEMA.TABLES").
-					Select("*").
-					Where("TABLE_SCHEMA=database()").
-					Where("TABLE_NAME=?", tname.String()).Find(&sqlTbl)
-				// fmt.Println(sqlTbl)
-				//数据库里没有这张表
-				if sqlTbl.TableName == "" {
-					create := ts.getCreateTableSql(tbJson)
-					// sql = fmt.Sprintf("%s;\n%s", sql, create)
-					ts.sql = append(ts.sql, create)
-					// fmt.Println(create)
-				} else {
-					change := ts.getGetChangeTableSql(tbJson, sqlTbl)
-					ts.sql = append(ts.sql, change)
-					// fmt.Println(change)
-				}
-			} else {
-				fmt.Printf("\x1b[%dm 文件: %s 缺少表名\x1b[0m\n", 31, ts.yamlFileFullPaths[i])
-				panic("缺少表名")
-			}
-
-		} else {
-			fmt.Printf("\x1b[%dm 文件: %s 不正确\x1b[0m\n", 31, ts.yamlFileFullPaths[i])
+	opt := diffOption{
+		dropPolicy:      ts.dropPolicy,
+		keepColumnOrder: ts.keepColumnOrder,
+		syncCharset:     ts.syncCharset,
+	}
+	ts.results = nil
+	ts.sql = nil
+	ts.changes = nil
+	for _, t := range ts.schemas {
+		st, ok := ts.states[t.Name]
+		if !ok {
+			st = newDBTableState(t.Name)
+		}
+		changes, sqlText, err := diffTable(t, st, opt)
+		if err != nil {
+			fmt.Printf("\x1b[%dm 文件: %s 表: %s 不正确: %s\x1b[0m\n", 31, t.SourceFile, t.Name, err.Error())
 			panic("配置文件不正确")
 		}
-
+		ts.results = append(ts.results, tableResult{table: t.Name, source: t.SourceFile, sql: sqlText, changes: changes})
+		ts.sql = append(ts.sql, sqlText)
+		ts.changes = append(ts.changes, changes...)
 	}
-
 	return ts
 }
 
-func (ts *YamlToSqlHandler) getCreateTableSql(tbl gjson.Result) string {
-
-	tname := tbl.Get("table")
-
-	// sql := fmt.Sprintf("CREATE TABLE %s()", tname.String())
-	sql := ""
-
-	createPrefix := fmt.Sprintf("CREATE TABLE %s(\n", tname.String())
-	if tbl.Get("options.charset").String() == "" {
-		fmt.Printf("\x1b[%dm 表: %s charset 不正确\x1b[0m\n", 31, tname)
-		panic("配置文件不正确")
+// verifyYmlFile 校验yml的合法行。
+// 字段级与索引级的校验已经前移到解析阶段（parseTableDoc），
+// 这里做需要看到全部表才能做的检查，并统一输出解析告警。
+func (ts *YamlToSqlHandler) verifyYmlFile() *YamlToSqlHandler {
+	for _, w := range ts.warnings {
+		fmt.Printf("\x1b[%dm[告警] %s\x1b[0m\n", 33, w)
 	}
-	if tbl.Get("options.collate").String() == "" {
-		fmt.Printf("\x1b[%dm 表: %s collate 不正确\x1b[0m\n", 31, tname)
-		panic("配置文件不正确")
-	}
-	createSuffix := fmt.Sprintf(")\nDEFAULT CHARACTER SET %s COLLATE %s ENGINE = InnoDB ",
-		tbl.Get("options.charset").String(),
-		tbl.Get("options.collate").String(),
+	return ts
+}
+
+// splitSqlStatements 按分号切分语句，忽略字符串字面量与反引号标识符内部的分号。
+// 字符串字面量与反引号标识符内部的分号不算分隔符，comment 或 default 里带分号也不会把语句切碎。
+func splitSqlStatements(sqlText string) []string {
+	var (
+		out   []string
+		cur   strings.Builder
+		rune_ = []rune(sqlText)
 	)
-	if tbl.Get("options.comment").String() != "" {
-		createSuffix = fmt.Sprintf("%s COMMENT = '%s' ;",
-			createSuffix,
-			tbl.Get("options.comment").String(),
-		)
-	}
-
-	// var Ids []information_schema.TalbeIdInfo
-	// gjson.ForEachLine(tbl.Get("id").String(), func(line gjson.Result) bool {
-	// 	fmt.Println(line)
-	// 	return true
-	// })
-	// fmt.Println(tbl.Get("id.id.type").IsObject())
-	// fmt.Println(tbl.Get("id.id").IsObject())
-	// fmt.Println(tbl.Get("id").IsObject())
-
-	var noId bool
-	// var noUniqueIndex bool
-	// var noIndex bool
-
-	columns := ""
-
-	// primary_keys
-	var primary_key string
-	{
-		// 如果配置了主键就从主键里招，没有就从ID里
-		var primary_columns []string
-		if tbl.Get("primary_indexes").Exists() {
-			for _, col := range tbl.Get("primary_indexes.columns").Array() {
-				if col.String() == "" {
+	for i := 0; i < len(rune_); i++ {
+		ch := rune_[i]
+		switch ch {
+		case '\'', '`':
+			quote := ch
+			cur.WriteRune(ch)
+			i++
+			for ; i < len(rune_); i++ {
+				c := rune_[i]
+				cur.WriteRune(c)
+				if quote == '\'' && c == '\\' && i+1 < len(rune_) {
+					i++
+					cur.WriteRune(rune_[i])
 					continue
 				}
-				primary_columns = append(primary_columns, col.String())
-			}
-		} else {
-			if tbl.Get("id").IsObject() {
-				tbl.Get("id").ForEach(func(key, value gjson.Result) bool {
-					if key.String() != "" {
-						primary_columns = append(primary_columns, key.String())
-					} else {
-						noId = true
+				if c == quote {
+					// '' 与 `` 是转义写法，需要再吃一个
+					if i+1 < len(rune_) && rune_[i+1] == quote {
+						i++
+						cur.WriteRune(rune_[i])
+						continue
 					}
-					return true
-				})
+					break
+				}
 			}
-		}
-		if len(primary_columns) > 0 {
-			primary_key = fmt.Sprintf(`PRIMARY KEY(%s)`, strings.Join(primary_columns, ","))
-		} else {
-			noId = true
+		case ';':
+			if stmt := strings.TrimSpace(cur.String()); stmt != "" {
+				out = append(out, stmt)
+			}
+			cur.Reset()
+		default:
+			cur.WriteRune(ch)
 		}
 	}
+	if stmt := strings.TrimSpace(cur.String()); stmt != "" {
+		out = append(out, stmt)
+	}
+	return out
+}
 
-	if tbl.Get("fields").IsObject() {
-		tbl.Get("fields").ForEach(func(key, value gjson.Result) bool {
-			if value.IsObject() {
+// hasRealChange 判断一段 SQL 文本里是否真的有需要执行的内容
+func hasRealChange(sqlText string) bool {
+	return len(splitSqlStatements(sqlText)) > 0
+}
 
-				def := value.Get("default").String()
-				generator := value.Get("generator").String()
-				comment := value.Get("comment")
-				columnType := value.Get("type").String()
-				// if columnType == "varchar" {
-				// 	columnType = "varchar(255)"
-				// }
-				columnType = getTypeYml2SqlMapping(columnType)
-				if value.Get("nullable").Bool() {
-					//不能有默认值的或者不写默认值
-					if !value.Get("default").Exists() || isNoDefaultType(columnType) {
-						if isNoDefaultType(columnType) {
-							columns = fmt.Sprintf("%s\t%s %s COMMENT '%s' ,\n",
-								columns,
-								key.String(),
-								columnType,
-								comment,
-							)
-						} else {
-							columns = fmt.Sprintf("%s\t%s %s DEFAULT NULL %s COMMENT '%s' ,\n",
-								columns,
-								key.String(),
-								columnType,
-								generator,
-								comment,
-							)
-						}
-
-					} else {
-						columns = fmt.Sprintf("%s\t%s %s DEFAULT '%s' %s COMMENT '%s' ,\n",
-							columns,
-							key.String(),
-							columnType,
-							def,
-							generator,
-							comment,
-						)
-					}
-
+func (ts *YamlToSqlHandler) printChangeReport() {
+	fmt.Printf("\x1b[%dm您将要执行的结构操作为： \x1b[0m\n", 34)
+	var danger, skipped, effective int
+	for _, r := range ts.results {
+		if !hasRealChange(r.sql) && !hasReportableChange(r.changes) {
+			continue
+		}
+		fmt.Printf(">>>>>>>>>>>>> %s (%s) >>>>>>>>>>>>>\n", r.table, r.source)
+		for _, c := range r.changes {
+			switch {
+			case c.Skipped:
+				skipped++
+				fmt.Printf("\x1b[%dm[跳过] %s %s：%s\x1b[0m\n", 90, c.Kind, c.Object, c.Reason)
+			default:
+				effective++
+				if c.Dangerous {
+					danger++
+				}
+				label := fmt.Sprintf("[%s] %s", c.Kind, c.Object)
+				if c.Reason != "" {
+					label = fmt.Sprintf("%s：%s", label, c.Reason)
+				}
+				if c.Dangerous {
+					fmt.Printf("\x1b[%dm%s\x1b[0m\n", 31, label)
 				} else {
-					if !value.Get("default").Exists() || isNoDefaultType(columnType) {
-						if isNoDefaultType(columnType) {
-							columns = fmt.Sprintf("%s\t%s %s NOT NULL COMMENT '%s' ,\n",
-								columns,
-								key.String(),
-								columnType,
-								comment,
-							)
-						} else {
-							columns = fmt.Sprintf("%s\t%s %s NOT NULL %s COMMENT '%s' ,\n",
-								columns,
-								key.String(),
-								columnType,
-								generator,
-								comment,
-							)
-						}
-
-					} else {
-						columns = fmt.Sprintf("%s\t%s %s DEFAULT '%s'  NOT NULL %s COMMENT '%s' ,\n",
-							columns,
-							key.String(),
-							columnType,
-							def,
-							generator,
-							comment,
-						)
-					}
-
+					fmt.Printf("\x1b[%dm%s\x1b[0m\n", 36, label)
 				}
-
-			} else {
-				fmt.Printf("\x1b[%dm 表: %s 的 %s 不正确\x1b[0m\n", 31, tname, key.String())
-				panic("配置文件不正确")
-			}
-
-			return true
-		})
-
-	}
-
-	if tbl.Get("indexes").IsObject() {
-		tbl.Get("indexes").ForEach(func(key, value gjson.Result) bool {
-			if value.Get("columns").IsArray() {
-				indexColumns := value.Get("columns").Array()
-				indexKeys := ""
-				for _, ic := range indexColumns {
-					indexKeys = fmt.Sprintf("%s%s,", indexKeys, ic.String())
+				if c.SQL != "" {
+					fmt.Printf("\x1b[%dm%s \x1b[0m\n", 33, c.SQL)
 				}
-				indexKeys = indexKeys[:len(indexKeys)-1]
-				columns = fmt.Sprintf("%s\tINDEX %s (%s),\n",
-					columns,
-					key.String(),
-					indexKeys,
-				)
 			}
-
-			return true
-		})
+		}
+		fmt.Println("<<<<<<<<<<<<<", r.table, "<<<<<<<<<<<<<")
 	}
-
-	if tbl.Get("unique_indexes").IsObject() {
-		tbl.Get("unique_indexes").ForEach(func(key, value gjson.Result) bool {
-			if value.Get("columns").IsArray() {
-				indexColumns := value.Get("columns").Array()
-				indexKeys := ""
-				for _, ic := range indexColumns {
-					indexKeys = fmt.Sprintf("%s%s,", indexKeys, ic.String())
-				}
-				indexKeys = indexKeys[:len(indexKeys)-1]
-				columns = fmt.Sprintf("%s\tUNIQUE INDEX %s (%s),\n",
-					columns,
-					key.String(),
-					indexKeys,
-				)
-			}
-
-			return true
-		})
-	}
-	if tbl.Get("fulltext_indexes").IsObject() {
-		tbl.Get("fulltext_indexes").ForEach(func(key, value gjson.Result) bool {
-			if value.Get("columns").IsArray() {
-				indexColumns := value.Get("columns").Array()
-				indexKeys := ""
-				for _, ic := range indexColumns {
-					indexKeys = fmt.Sprintf("%s%s,", indexKeys, ic.String())
-				}
-				indexKeys = indexKeys[:len(indexKeys)-1]
-				columns = fmt.Sprintf("%s\tFULLTEXT INDEX %s (%s),\n",
-					columns,
-					key.String(),
-					indexKeys,
-				)
-			}
-
-			return true
-		})
-	}
-
-	if !noId {
-		columns = fmt.Sprintf("%s\t%s\n",
-			columns,
-			primary_key,
-		)
-	} else {
-		columns = columns[:len(columns)-2]
-	}
-	sql = fmt.Sprintf("%s%s%s\n", createPrefix, columns, createSuffix)
-	return sql
+	fmt.Printf("\x1b[%dm共 %d 张表，%d 条变更待执行，%d 条破坏性变更，%d 条已跳过 \x1b[0m\n",
+		34, len(ts.results), effective, danger, skipped)
 }
 
-func isNoDefaultType(dataType string) bool {
-	switch dataType {
-	case "tinytext", "mediumtext", "text", "longtext", "blob", "tinyblob",
-		"mediumblob", "longblob":
-		return true
-	}
-	return false
+// hasReportableChange 是否有值得展示的变更（包括被跳过的）
+func hasReportableChange(changes []SchemaChange) bool {
+	return len(changes) > 0
 }
 
-func verifyDataType(dataType string) int {
-	switch dataType {
-	case "int", "integer", "tinyint", "smallint", "mediumint", "bigint",
-		"int unsigned", "integer unsigned", "tinyint unsigned", "smallint unsigned",
-		"mediumint unsigned", "bigint unsigned", "bit":
-		return 1
-	case "float", "double", "decimal":
-		return 2
-	case "bool":
-		return 3
-	case "enum", "set", "varchar", "char", "tinytext", "mediumtext", "text", "longtext", "blob", "tinyblob",
-		"mediumblob", "longblob", "binary", "varbinary":
-		return 4
-	case "date", "datetime", "timestamp", "time":
-		return 5
+// exportSql 把生成的 SQL 写到文件，便于走审核流程
+func (ts *YamlToSqlHandler) exportSql() {
+	if ts.sqlExportPath == "" {
+		return
+	}
+	if dir := path.Dir(ts.sqlExportPath); dir != "" {
+		os.MkdirAll(dir, os.ModePerm)
+	}
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("-- dataschema 生成于 %s\n", time.Now().Format("2006-01-02 15:04:05")))
+	for _, r := range ts.results {
+		stmts := splitSqlStatements(r.sql)
+		if len(stmts) == 0 {
+			continue
+		}
+		b.WriteString(fmt.Sprintf("\n-- >>> %s (%s)\n", r.table, r.source))
+		for _, s := range stmts {
+			b.WriteString(s)
+			b.WriteString(";\n")
+		}
+		b.WriteString(fmt.Sprintf("-- <<< %s\n", r.table))
+	}
+	if err := os.WriteFile(ts.sqlExportPath, []byte(b.String()), 0o644); err != nil {
+		fmt.Printf("\x1b[%dm SQL 导出失败: %s \x1b[0m\n", 31, err.Error())
+		panic(fmt.Sprintf("\x1b[%dm SQL 导出失败: %s \x1b[0m\n", 31, err.Error()))
+	}
+	fmt.Printf("\x1b[%dmSQL 已导出到 %s \x1b[0m\n", 36, ts.sqlExportPath)
+}
 
-		//不能有默认值的类型
+// sqlFingerprint 计算语句指纹，用于执行记录去重
+func sqlFingerprint(stmt string) string {
+	normalized := strings.Join(strings.Fields(stmt), " ")
+	sum := sha256.Sum256([]byte(normalized))
+	return hex.EncodeToString(sum[:])
+}
+
+func (ts *YamlToSqlHandler) ensureMigrationTable() {
+	ddl := fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s (\n"+
+		"\t`id` bigint unsigned NOT NULL AUTO_INCREMENT COMMENT '主键',\n"+
+		"\t`fingerprint` char(64) NOT NULL COMMENT 'sql指纹',\n"+
+		"\t`table_name` varchar(191) NOT NULL COMMENT '所属表',\n"+
+		"\t`sql_text` text NOT NULL COMMENT '已执行的sql',\n"+
+		"\t`executed_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '执行时间',\n"+
+		"\tPRIMARY KEY(`id`),\n"+
+		"\tUNIQUE INDEX `unq_fingerprint` (`fingerprint`)\n"+
+		") DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci ENGINE = InnoDB COMMENT = 'dataschema结构变更记录' ;",
+		quoteIdent(ts.migrationTable))
+	if err := ts.db.Exec(ddl).Error; err != nil {
+		fmt.Printf("\x1b[%dm 创建变更记录表失败: %s \x1b[0m\n", 31, err.Error())
+		panic(err)
+	}
+	var records []struct {
+		Fingerprint string `gorm:"column:fingerprint"`
+	}
+	ts.db.Table(quoteIdent(ts.migrationTable)).Select("fingerprint").Find(&records)
+	ts.executedSqlHashes = make(map[string]bool, len(records))
+	for _, r := range records {
+		ts.executedSqlHashes[r.Fingerprint] = true
+	}
+}
+
+func (ts *YamlToSqlHandler) recordMigration(stmt, tableName string) {
+	if !ts.migrationHistory {
+		return
+	}
+	err := ts.db.Exec(fmt.Sprintf("INSERT INTO %s (`fingerprint`,`table_name`,`sql_text`,`executed_at`) VALUES(?,?,?,?)",
+		quoteIdent(ts.migrationTable)),
+		sqlFingerprint(stmt), tableName, stmt, time.Now().Format("2006-01-02 15:04:05")).Error
+	if err != nil {
+		// 记录失败不应该影响已经成功的结构变更，只提示
+		fmt.Printf("\x1b[%dm 写入变更记录失败: %s \x1b[0m\n", 31, err.Error())
+	}
+}
+
+// executeSql 逐条执行 SQL。
+//
+// DDL 不放进事务：MySQL 的 DDL 会隐式提交，事务与 Rollback 对它完全无效，
+// 包起来只会让人误以为失败后库还是干净的。
+// 这里逐条执行、逐条打印进度，失败时明确指出是哪一条、前面已经成功了多少条，
+// 配合 SetMigrationHistory 可以从断点继续跑。
+func (ts *YamlToSqlHandler) executeSql() {
+	ts.exportSql()
+	if ts.dryRun {
+		fmt.Printf("\x1b[%dmDryRun 模式，不执行任何 SQL。可通过 GetSql()/GetChangeReport() 获取结果 \x1b[0m\n", 36)
+		return
+	}
+	if ts.migrationHistory {
+		ts.ensureMigrationTable()
 	}
 
-	return 0
+	var total, done, skippedCount int
+	for _, r := range ts.results {
+		total += len(splitSqlStatements(r.sql))
+	}
+	for _, r := range ts.results {
+		for _, stmt := range splitSqlStatements(r.sql) {
+			exec := stmt + ";"
+			if ts.migrationHistory && ts.executedSqlHashes[sqlFingerprint(stmt)] {
+				skippedCount++
+				fmt.Printf("\x1b[%dm[已执行过，跳过] %s\x1b[0m\n", 90, exec)
+				continue
+			}
+			fmt.Printf("\x1b[%dm>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>： \x1b[0m\n", 34)
+			fmt.Printf("\x1b[%dm正在执行sql:\n%s \x1b[0m\n", 34, exec)
+			fmt.Printf("\x1b[%dm>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>： \x1b[0m\n", 34)
+			if err := ts.db.Exec(exec).Error; err != nil {
+				ts.failedSQL = exec
+				fmt.Printf("\x1b[%dm执行sql:\n%s\n时出现错误（已成功执行 %d/%d 条，DDL 无法回滚，请修复后重新执行） \x1b[0m\n",
+					31, exec, done, total)
+				panic(err)
+			}
+			ts.recordMigration(stmt, r.table)
+			done++
+		}
+	}
+	if skippedCount > 0 {
+		fmt.Printf("\x1b[%dm已跳过 %d 条历史执行过的语句 \x1b[0m\n", 36, skippedCount)
+	}
+	fmt.Printf("\x1b[%dm>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>： \x1b[0m\n", 34)
+	fmt.Printf("\x1b[%dmSQL更新完毕： \x1b[0m\n", 36)
+	fmt.Printf("\x1b[%dm<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<： \x1b[0m\n", 34)
 }
 
 func (ts *YamlToSqlHandler) doSqlSafe() *YamlToSqlHandler {
-	// fmt.Println("您将要执行的结构操作为：")
-	fmt.Printf("\x1b[%dm您将要执行的结构操作为： \x1b[0m\n", 34)
-	for k, v := range ts.sql {
-		vv := strings.ReplaceAll(v, "\n", "")
-		vv = strings.ReplaceAll(vv, " ", "")
-		if vv == "" {
-			continue
-		}
-		fmt.Println(">>>>>>>>>>>>>", gjson.Parse(ts.tables[k]).Get("Table.table").String(), ">>>>>>>>>>>>>")
-		fmt.Printf("\x1b[%dm%s \x1b[0m\n", 33, v)
-		fmt.Println("<<<<<<<<<<<<<", gjson.Parse(ts.tables[k]).Get("Table.table").String(), "<<<<<<<<<<<<<")
+	ts.printChangeReport()
+	// DryRun 就是纯预览，不该再问确认，否则导出 SQL 还得先敲个 Y
+	if ts.dryRun {
+		ts.exportSql()
+		fmt.Printf("\x1b[%dmDryRun 模式，不执行任何 SQL。可通过 GetSql()/GetChangeReport() 获取结果 \x1b[0m\n", 36)
+		return ts
 	}
 	fmt.Printf("\x1b[%dm>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>： \x1b[0m\n", 34)
 	fmt.Printf("\x1b[%dm确认执行请输入[ Y ]： \x1b[0m\n", 34)
@@ -558,858 +800,40 @@ func (ts *YamlToSqlHandler) doSqlSafe() *YamlToSqlHandler {
 	commend := ""
 	fmt.Scanln(&commend)
 	if commend == "Y" || commend == "y" {
-
-		// ts.db.Exec("sql")
-		// tx := ts.db.Begin()
-		errsql := ""
-		err := ts.db.Transaction(func(tx *gorm.DB) error {
-			for _, tsql := range ts.sql {
-				// fmt.Println(">>>>>>>>>>>>>", ts.yamlFileFullPaths[k], ">>>>>>>>>>>>>")
-				// fmt.Printf("\x1b[%dm正在执行sql:\n%s \x1b[0m\n", 34, v)
-				vv := strings.ReplaceAll(tsql, "\n", "")
-				vv = strings.ReplaceAll(vv, " ", "")
-				if vv == "" {
-					continue
-				}
-
-				subsqls := strings.Split(tsql, ";")
-				for _, subsql := range subsqls {
-
-					ss := strings.ReplaceAll(subsql, ";", "")
-					ss = strings.ReplaceAll(ss, " ", "")
-					ss = strings.ReplaceAll(ss, "\n", "")
-					if ss == "" {
-						continue
-					}
-					fmt.Printf("\x1b[%dm>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>： \x1b[0m\n", 34)
-					fmt.Printf("\x1b[%dm正在执行sql:\n%s \x1b[0m\n", 34,
-						subsql+";")
-					fmt.Printf("\x1b[%dm>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>： \x1b[0m\n", 34)
-					subsql += ";"
-					err := tx.Exec(subsql).Error
-					if err != nil {
-						tx.Rollback()
-						errsql = subsql
-						return err
-					}
-				}
-				// fmt.Println("<<<<<<<<<<<<<", ts.yamlFileFullPaths[k], "<<<<<<<<<<<<<")
-			}
-			// tx.Commit()
-			return nil
-		})
-		if err != nil {
-			fmt.Printf("\x1b[%dm执行sql:\n%s\n时出现错误 \x1b[0m\n", 31, errsql)
-			panic(err)
-		}
-		fmt.Printf("\x1b[%dm>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>： \x1b[0m\n", 34)
-		fmt.Printf("\x1b[%dmSQL更新完毕： \x1b[0m\n", 36)
-		fmt.Printf("\x1b[%dm<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<： \x1b[0m\n", 34)
+		ts.executeSql()
 	}
-
 	return ts
 }
 
 func (ts *YamlToSqlHandler) doSql() *YamlToSqlHandler {
-	// fmt.Println("您将要执行的结构操作为：")
-	fmt.Printf("\x1b[%dm您将要执行的结构操作为： \x1b[0m\n", 34)
-	for k, v := range ts.sql {
-		vv := strings.ReplaceAll(v, "\n", "")
-		vv = strings.ReplaceAll(vv, " ", "")
-		if vv == "" {
-			continue
-		}
-		fmt.Println(">>>>>>>>>>>>>", ts.yamlFileFullPaths[k], ">>>>>>>>>>>>>")
-		fmt.Printf("\x1b[%dm%s \x1b[0m\n", 33, v)
-		fmt.Println("<<<<<<<<<<<<<", ts.yamlFileFullPaths[k], "<<<<<<<<<<<<<")
+	ts.printChangeReport()
+	if ts.dryRun {
+		ts.exportSql()
+		fmt.Printf("\x1b[%dmDryRun 模式，不执行任何 SQL。可通过 GetSql()/GetChangeReport() 获取结果 \x1b[0m\n", 36)
+		return ts
 	}
 	fmt.Printf("\x1b[%dm>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>： \x1b[0m\n", 34)
 	fmt.Printf("\x1b[%dm确认执行请输入[ Y ]： \x1b[0m\n", 34)
 	fmt.Printf("\x1b[%dm>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>： \x1b[0m\n", 34)
-
-	errsql := ""
-	err := ts.db.Transaction(func(tx *gorm.DB) error {
-		for _, tsql := range ts.sql {
-
-			vv := strings.ReplaceAll(tsql, "\n", "")
-			vv = strings.ReplaceAll(vv, " ", "")
-			if vv == "" {
-				continue
-			}
-
-			subsqls := strings.Split(tsql, ";")
-			for _, subsql := range subsqls {
-
-				ss := strings.ReplaceAll(subsql, ";", "")
-				ss = strings.ReplaceAll(ss, " ", "")
-				ss = strings.ReplaceAll(ss, "\n", "")
-				if ss == "" {
-					continue
-				}
-				fmt.Printf("\x1b[%dm>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>： \x1b[0m\n", 34)
-				fmt.Printf("\x1b[%dm正在执行sql:\n%s \x1b[0m\n", 34,
-					subsql+";")
-				fmt.Printf("\x1b[%dm>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>： \x1b[0m\n", 34)
-				subsql += ";"
-				err := tx.Exec(subsql).Error
-				if err != nil {
-					tx.Rollback()
-					errsql = subsql
-					return err
-				}
-			}
-			// fmt.Println("<<<<<<<<<<<<<", ts.yamlFileFullPaths[k], "<<<<<<<<<<<<<")
-		}
-		// tx.Commit()
-		return nil
-	})
-	if err != nil {
-		fmt.Printf("\x1b[%dm执行sql:\n%s\n时出现错误 \x1b[0m\n", 31, errsql)
-		panic(err)
-	}
-
-	fmt.Printf("\x1b[%dm>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>： \x1b[0m\n", 34)
-	fmt.Printf("\x1b[%dmSQL更新完毕： \x1b[0m\n", 36)
-	fmt.Printf("\x1b[%dm<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<： \x1b[0m\n", 34)
-
+	ts.executeSql()
 	return ts
 }
 
-func (ts *YamlToSqlHandler) getGetChangeTableSql(tbl gjson.Result, sqlTbl information_schema.SqlTable) string {
-	tname := tbl.Get("table").String()
-	sql := "\n"
-	if sqlTbl.TableComment != tbl.Get("options.comment").String() {
-		sql = fmt.Sprintf("%sALTER TABLE %s comment '%s';\n", sql, tname, tbl.Get("options.comment").String())
-	}
-	//行
-	//计算sql行
-	var sqlColumns []information_schema.SqlTableColumns
-	ts.db.Table("`INFORMATION_SCHEMA`.`COLUMNS`").
-		Where("TABLE_SCHEMA=database()").
-		Where("TABLE_NAME=?", tname).
-		Find(&sqlColumns)
-	var sqlColumnsSerialize = information_schema.SqlColumnsSerialize{}
-	// sqlColumnsSerialize = map[string]map[string]string{}
-	for _, sc := range sqlColumns {
-		// if strings.ToLower(sc.ColumnName) == "id" {
-		// 	continue
-		// }
-		if sqlColumnsSerialize[sc.ColumnName] == nil {
-			sqlColumnsSerialize[sc.ColumnName] = map[string]string{}
-		}
-		// if !strings.Contains(sc.ColumnType, "varchar") && strings.Contains(sc.ColumnType, "(") {
-		// 	b := strings.Index(sc.ColumnType, "(")
-		// 	e := strings.Index(sc.ColumnType, ")")
-		// 	sc.ColumnType = sc.ColumnType[:b] + sc.ColumnType[e+1:]
-		// }
-		sc.ColumnType = getTypeYml2SqlMapping(sc.ColumnType)
-
-		sqlColumnsSerialize[sc.ColumnName]["type"] = sc.ColumnType
-
-		if strings.ToLower(sc.IsNullable) == "yes" {
-			sqlColumnsSerialize[sc.ColumnName]["nullable"] = "true"
-		} else {
-			sqlColumnsSerialize[sc.ColumnName]["nullable"] = "false"
-		}
-
-		sqlColumnsSerialize[sc.ColumnName]["comment"] = sc.ColumnComment
-		if sc.ColumnDefault == nil {
-			// sqlColumnsSerialize[sc.ColumnName]["default"] = ""
-		} else {
-			sqlColumnsSerialize[sc.ColumnName]["default"] = *sc.ColumnDefault
-		}
-		sqlColumnsSerialize[sc.ColumnName]["generator"] = sc.Extra
-	}
-	sqlColumnsJ, err := json.Marshal(&sqlColumnsSerialize)
-	if err != nil {
-		fmt.Printf("\x1b[%dm 表: %s 序列化失败 \x1b[0m\n", 31, tname)
-		panic("配置文件不正确")
-	}
-	//计算删除和修改
-	// var dropCloumns map[string]bool = map[string]bool{}
-	// dropCloumns
-	dropColumnsSql := ""
-	sqlColumnsgj := gjson.Parse(string(sqlColumnsJ))
-	// fmt.Println(tbl.String())
-	sqlColumnsgj.ForEach(func(key, value gjson.Result) bool {
-		if tbl.Get("fields." + key.String()).Exists() {
-			var refresh bool
-			var yy string
-			//类型
-			if tbl.Get("fields." + key.String() + ".type").Exists() {
-				ymlt := tbl.Get("fields." + key.String() + ".type").String()
-				ymlt = strings.ReplaceAll(ymlt, "integer", "int")
-				// if ymlt == "varchar" {
-				// 	ymlt = "varchar(255)"
-				// }
-				ymlt = getTypeYml2SqlMapping(ymlt)
-				sqlt := value.Get("type").String()
-				sqlt = strings.ReplaceAll(sqlt, "integer", "int")
-
-				if strings.Compare(strings.ToLower(sqlt),
-					strings.ToLower(ymlt)) != 0 {
-					refresh = true
-					yy += "类型/"
-				}
-			} else {
-				fmt.Printf("\x1b[%dm 表: %s 配置文件不正确 \x1b[0m\n", 31, tname)
-				panic("配置文件不正确")
-			}
-
-			//nullable
-			if tbl.Get("fields." + key.String() + ".nullable").Exists() {
-				if strings.Compare(strings.ToLower(value.Get("nullable").String()),
-					strings.ToLower(tbl.Get("fields."+key.String()+".nullable").String())) != 0 {
-					refresh = true
-					yy += "空不空/"
-				}
-			} else {
-				if strings.ToLower(value.Get("nullable").String()) != "false" {
-					refresh = true
-					yy += "空不空/"
-				}
-			}
-
-			//comment
-			if tbl.Get("fields." + key.String() + ".comment").Exists() {
-				if strings.Compare(value.Get("comment").String(),
-					tbl.Get("fields."+key.String()+".comment").String()) != 0 {
-					refresh = true
-					yy += "备注/"
-				}
-			} else {
-				if value.Get("comment").String() != "" {
-					refresh = true
-					yy += "备注/"
-				}
-			}
-
-			//default
-			//判定是否为自动插入数据
-			//有些数据库类型不允许有默认值
-			if !isNoDefaultType(value.Get("type").String()) {
-				if strings.ToLower(value.Get("default").String()) == "current_timestamp" &&
-					strings.ToLower(value.Get("generator").String()) == "default_generated" {
-					if tbl.Get("fields." + key.String() + ".generator").Exists() {
-						if strings.ToLower(tbl.Get("fields."+key.String()+".generator").String()) !=
-							"default current_timestamp" {
-							refresh = true
-							yy += "默认/"
-						}
-					} else {
-						// fmt.Println(tbl)
-						// fmt.Println(tbl.Get("fields." + key.String() + ".generator"))
-						refresh = true
-						yy += "默认/"
-					}
-				} else {
-					if tbl.Get("fields." + key.String() + ".default").Exists() {
-						if value.Get("default").Exists() {
-							if strings.Compare(value.Get("default").String(),
-								tbl.Get("fields."+key.String()+".default").String()) != 0 {
-								refresh = true
-								yy += "默认/"
-							}
-						} else {
-							refresh = true
-							yy += "默认/"
-						}
-					} else {
-						if value.Get("default").String() != "" {
-							refresh = true
-							yy += "默认/"
-						}
-					}
-				}
-			}
-
-			//generator
-			sqlg := strings.ToLower(value.Get("generator").String())
-			if tbl.Get("fields." + key.String() + ".generator").Exists() {
-				// if !strings.Contains(sqlg, "default_generated") {
-				// 	if strings.Compare(sqlg,
-				// 		strings.ToLower(tbl.Get("fields."+key.String()+".generator").String())) != 0 {
-				// 		refresh = true
-				// 		yy += "自动/"
-				// 	}
-				// }
-
-			} else {
-				if value.Get("generator").String() != "" && !strings.Contains(sqlg, "default_generated") {
-					refresh = true
-					yy += "自动/"
-				}
-			}
-			if refresh {
-				ymlt := tbl.Get("fields." + key.String() + ".type").String()
-				// if ymlt == "varchar" {
-				// 	ymlt = "varchar(255)"
-				// }
-				ymlt = getTypeYml2SqlMapping(ymlt)
-				if isNoDefaultType(ymlt) {
-					if tbl.Get("fields."+key.String()+".nullable").Exists() &&
-						tbl.Get("fields."+key.String()+".nullable").String() == "true" {
-						sql = fmt.Sprintf("%sALTER TABLE %s MODIFY COLUMN %s %s %s COMMENT '%s';\n",
-							sql,
-							tname,
-							key.String(),
-							ymlt,
-							tbl.Get("fields."+key.String()+".generator").String(),
-							tbl.Get("fields."+key.String()+".comment").String(),
-						)
-					} else {
-
-						sql = fmt.Sprintf("%sALTER TABLE %s MODIFY COLUMN %s %s NOT NULL %s COMMENT '%s';\n",
-							sql,
-							tname,
-							key.String(),
-							ymlt,
-							tbl.Get("fields."+key.String()+".generator").String(),
-							tbl.Get("fields."+key.String()+".comment").String(),
-						)
-					}
-
-				} else {
-
-					if tbl.Get("fields."+key.String()+".nullable").Exists() &&
-						tbl.Get("fields."+key.String()+".nullable").String() == "true" {
-						if tbl.Get("fields." + key.String() + ".default").Exists() {
-							sql = fmt.Sprintf("%sALTER TABLE %s MODIFY COLUMN %s %s %s DEFAULT '%s' COMMENT '%s';\n",
-								sql,
-								tname,
-								key.String(),
-								ymlt,
-								tbl.Get("fields."+key.String()+".generator").String(),
-								tbl.Get("fields."+key.String()+".default").String(),
-								tbl.Get("fields."+key.String()+".comment").String(),
-							)
-						} else {
-							sql = fmt.Sprintf("%sALTER TABLE %s MODIFY COLUMN %s %s %s DEFAULT NULL COMMENT '%s';\n",
-								sql,
-								tname,
-								key.String(),
-								ymlt,
-								tbl.Get("fields."+key.String()+".generator").String(),
-								// tbl.Get("fields."+key.String()+".default").String(),
-								tbl.Get("fields."+key.String()+".comment").String(),
-							)
-						}
-
-					} else {
-
-						if tbl.Get("fields." + key.String() + ".default").Exists() {
-							sql = fmt.Sprintf("%sALTER TABLE %s MODIFY COLUMN %s %s NOT NULL %s DEFAULT '%s' COMMENT '%s';\n",
-								sql,
-								tname,
-								key.String(),
-								ymlt,
-								tbl.Get("fields."+key.String()+".generator").String(),
-								tbl.Get("fields."+key.String()+".default").String(),
-								tbl.Get("fields."+key.String()+".comment").String(),
-							)
-						} else {
-							sql = fmt.Sprintf("%sALTER TABLE %s MODIFY COLUMN %s %s NOT NULL %s COMMENT '%s';\n",
-								sql,
-								tname,
-								key.String(),
-								ymlt,
-								tbl.Get("fields."+key.String()+".generator").String(),
-								// tbl.Get("fields."+key.String()+".default").String(),
-								tbl.Get("fields."+key.String()+".comment").String(),
-							)
-						}
-
-					}
-
-				}
-
-				// fmt.Println(">>>>>>更新行==")
-				// fmt.Println("库= ", key.String())
-				// fmt.Println("yml= ", tbl.Get("fields."+key.String()).String())
-				// fmt.Println("sql= ", value.String())
-				// fmt.Println("原因：", yy)
-				// fmt.Println("<<<<<===")
-			} else {
-
-				// fmt.Println(">>>>>>保留行==")
-				// fmt.Println("库= ", key.String())
-				// fmt.Println("yml= ", tbl.Get("fields."+key.String()).String())
-				// fmt.Println("sql= ", value.String())
-				// fmt.Println("原因：", yy)
-				// fmt.Println("<<<<<===")
-			}
-
-		} else if tbl.Get("id." + key.String()).Exists() {
-			//主键区，暂时用不上
-		} else {
-			dropColumnsSql = fmt.Sprintf("%sALTER  TABLE %s DROP %s;\n",
-				dropColumnsSql,
-				tname,
-				key.String(),
-			)
-		}
-
-		return true
-	})
-
-	//计算新增
-	tbl.Get("fields").ForEach(func(key, value gjson.Result) bool {
-
-		if !sqlColumnsgj.Get(key.String()).Exists() {
-
-			ymlt := value.Get("type").String()
-			// if ymlt == "varchar" {
-			// 	ymlt = "varchar(255)"
-			// }
-			ymlt = getTypeYml2SqlMapping(ymlt)
-			if isNoDefaultType(ymlt) {
-				if value.Get("nullable").Exists() &&
-					value.Get("nullable").String() != "true" {
-					sql = fmt.Sprintf("%sALTER TABLE %s ADD COLUMN %s %s NOT NULL %s COMMENT '%s';\n",
-						sql,
-						tname,
-						key.String(),
-						ymlt,
-						tbl.Get("fields."+key.String()+".generator").String(),
-						tbl.Get("fields."+key.String()+".comment").String(),
-					)
-				} else {
-					sql = fmt.Sprintf("%sALTER TABLE %s ADD COLUMN %s %s %s COMMENT '%s';\n",
-						sql,
-						tname,
-						key.String(),
-						ymlt,
-						tbl.Get("fields."+key.String()+".generator").String(),
-						tbl.Get("fields."+key.String()+".comment").String(),
-					)
-				}
-
-			} else {
-
-				if value.Get("nullable").Exists() &&
-					value.Get("nullable").String() != "true" {
-					if value.Get("default").Exists() {
-						sql = fmt.Sprintf("%sALTER TABLE %s ADD COLUMN %s %s NOT NULL %s DEFAULT '%s' COMMENT '%s';\n",
-							sql,
-							tname,
-							key.String(),
-							ymlt,
-							tbl.Get("fields."+key.String()+".generator").String(),
-							tbl.Get("fields."+key.String()+".default").String(),
-							tbl.Get("fields."+key.String()+".comment").String(),
-						)
-					} else {
-						sql = fmt.Sprintf("%sALTER TABLE %s ADD COLUMN %s %s NOT NULL %s COMMENT '%s';\n",
-							sql,
-							tname,
-							key.String(),
-							ymlt,
-							tbl.Get("fields."+key.String()+".generator").String(),
-							// tbl.Get("fields."+key.String()+".default").String(),
-							tbl.Get("fields."+key.String()+".comment").String(),
-						)
-					}
-
-				} else {
-					if value.Get("default").Exists() {
-						sql = fmt.Sprintf("%sALTER TABLE %s ADD COLUMN %s %s %s DEFAULT '%s' COMMENT '%s';\n",
-							sql,
-							tname,
-							key.String(),
-							ymlt,
-							tbl.Get("fields."+key.String()+".generator").String(),
-							tbl.Get("fields."+key.String()+".default").String(),
-							tbl.Get("fields."+key.String()+".comment").String(),
-						)
-					} else {
-						sql = fmt.Sprintf("%sALTER TABLE %s ADD COLUMN %s %s %s DEFAULT NULL COMMENT '%s';\n",
-							sql,
-							tname,
-							key.String(),
-							ymlt,
-							tbl.Get("fields."+key.String()+".generator").String(),
-							// tbl.Get("fields."+key.String()+".default").String(),
-							tbl.Get("fields."+key.String()+".comment").String(),
-						)
-					}
-
-				}
-
-			}
-
-		}
-
-		return true
-	})
-	// fmt.Println(string(sqlColumnsJ))
-	///
-	//索引
-	var sqlIndexes []information_schema.SqlIndexes
-	ts.db.Raw(fmt.Sprintf("show indexes from %s", tname)).Scan(&sqlIndexes)
-
-	var sqlIndexesSerialize information_schema.SqlIndexesSerialize
-	sqlIndexesSerialize.UnqIndexes = map[string]map[string][]string{}
-	sqlIndexesSerialize.Indexes = map[string]map[string][]string{}
-	sqlIndexesSerialize.FulltextIndexes = map[string]map[string][]string{}
-	sqlIndexesSerialize.PrimaryIndexes = map[string][]string{}
-
-	//计算sql
-	for _, sqlIndex := range sqlIndexes {
-		if strings.ToLower(sqlIndex.Key_name) == "primary" {
-			sqlIndexesSerialize.PrimaryIndexes["columns"] = append(sqlIndexesSerialize.PrimaryIndexes["columns"], sqlIndex.Column_name)
+// trimSql 去掉没有任何变更的表，保持 sql 与 results 下标一致
+func (ts *YamlToSqlHandler) trimSql() *YamlToSqlHandler {
+	var (
+		newsql     []string
+		newresults []tableResult
+	)
+	for i, v := range ts.sql {
+		if !hasRealChange(v) {
 			continue
 		}
-		if strings.ToLower(sqlIndex.IndexType) == "fulltext" {
-			if sqlIndexesSerialize.FulltextIndexes[sqlIndex.Key_name] == nil {
-				sqlIndexesSerialize.FulltextIndexes[sqlIndex.Key_name] = map[string][]string{}
-			}
-			sqlIndexesSerialize.FulltextIndexes[sqlIndex.Key_name]["columns"] = append(sqlIndexesSerialize.FulltextIndexes[sqlIndex.Key_name]["columns"], sqlIndex.Column_name)
-		} else if strings.ToLower(sqlIndex.IndexType) == "btree" {
-			if sqlIndex.Non_unique == 0 {
-				// fmt.Println(sqlIndex.Key_name)
-				if sqlIndexesSerialize.UnqIndexes[sqlIndex.Key_name] == nil {
-					sqlIndexesSerialize.UnqIndexes[sqlIndex.Key_name] = map[string][]string{}
-				}
-				sqlIndexesSerialize.UnqIndexes[sqlIndex.Key_name]["columns"] = append(sqlIndexesSerialize.UnqIndexes[sqlIndex.Key_name]["columns"], sqlIndex.Column_name)
-			}
-			if sqlIndex.Non_unique == 1 {
-				// fmt.Println(sqlIndex.Key_name)
-				if sqlIndexesSerialize.Indexes[sqlIndex.Key_name] == nil {
-					sqlIndexesSerialize.Indexes[sqlIndex.Key_name] = map[string][]string{}
-				}
-				sqlIndexesSerialize.Indexes[sqlIndex.Key_name]["columns"] = append(sqlIndexesSerialize.Indexes[sqlIndex.Key_name]["columns"], sqlIndex.Column_name)
-			}
-		}
+		newsql = append(newsql, v)
+		newresults = append(newresults, ts.results[i])
 	}
-
-	sqlIndexesJ, err := json.Marshal(&sqlIndexesSerialize)
-	if err != nil {
-		fmt.Printf("\x1b[%dm 表: %s 序列化失败 \x1b[0m\n", 31, tname)
-		panic("配置文件不正确")
-	}
-	// fmt.Println(string(sqlIndexesJ))
-	// var keepThisKey bool
-	//计算删除+修改
-	// var dropIndexes map[string]bool = map[string]bool{}
-	dropIndexesSql := ""
-	if gjson.Get(string(sqlIndexesJ), "unique_indexes").Exists() {
-		gjson.Get(string(sqlIndexesJ), "unique_indexes").ForEach(func(key, value gjson.Result) bool {
-			if tbl.Get("unique_indexes." + key.String()).Exists() {
-				if strings.Compare(value.String(), tbl.Get("unique_indexes."+key.String()).String()) == 0 {
-					// keepThisKey = true
-					// fmt.Println(">>>>>>保留==")
-					// fmt.Println("unqkey= ", key.String())
-					// fmt.Println("yml= ", tbl.Get("unique_indexes."+key.String()).String())
-					// fmt.Println("sql= ", value.String())
-					// fmt.Println("<<<<<===")
-				} else {
-					sql = fmt.Sprintf("%sDROP INDEX %s ON %s;\n",
-						sql,
-						key.String(),
-						tname,
-					)
-					sqlcol := ""
-					for _, v := range tbl.Get("unique_indexes." + key.String() + ".columns").Array() {
-						sqlcol = fmt.Sprintf("%s%s,", sqlcol, v)
-					}
-					sqlcol = sqlcol[:len(sqlcol)-1]
-					sql = fmt.Sprintf("%sCREATE UNIQUE INDEX %s ON %s(%s);\n",
-						sql,
-						key.String(),
-						tname,
-						sqlcol,
-					)
-					// keepThisKey = false
-					// needReaddKey[key.String()] = true
-				}
-			} else {
-				dropIndexesSql = fmt.Sprintf("%sDROP INDEX %s ON %s;\n",
-					dropIndexesSql,
-					key.String(),
-					tname,
-				)
-				// if value.Get("columns")
-				// keepThisKey = false
-			}
-			return true
-		})
-	}
-
-	// 主键搜索，如果yml配置了primary_keys，则进行维护否则跳过
-	if tbl.Get("primary_indexes").Exists() {
-		primary_indexes := tbl.Get("primary_indexes.columns")
-		sql_primary_indexes := gjson.ParseBytes(sqlIndexesJ).Get("primary_indexes.columns")
-		if primary_indexes.String() != sql_primary_indexes.String() {
-
-			//仅删除
-			__f_drop := func() {
-				dropIndexesSql = fmt.Sprintf("%sALTER TABLE %s DROP PRIMARY KEY;\n",
-					dropIndexesSql,
-					tname,
-				)
-			}
-
-			//仅添加
-			__f_add := func() {
-				sqlcol := ""
-				for _, v := range primary_indexes.Array() {
-					sqlcol = fmt.Sprintf("%s%s,", sqlcol, v)
-				}
-				sqlcol = sqlcol[:len(sqlcol)-1]
-
-				sql = fmt.Sprintf("%sALTER TABLE %s ADD PRIMARY KEY (%s);\n",
-					sql,
-					tname,
-					sqlcol,
-				)
-			}
-
-			// 删除后添加
-			__f_update := func() {
-				sql = fmt.Sprintf("%sALTER TABLE %s DROP PRIMARY KEY;\n",
-					sql,
-					tname,
-				)
-				__f_add()
-			}
-
-			// 如果其中一个是空的
-			if primary_indexes.String() == "" || sql_primary_indexes.String() == "" {
-				// 如果yml配置了空，sql非空，则删除,否则添加
-				if primary_indexes.String() == "" && sql_primary_indexes.String() != "" {
-					__f_drop()
-				} else {
-					__f_add()
-				}
-			} else {
-				__f_update()
-			}
-		}
-	}
-
-	if gjson.Get(string(sqlIndexesJ), "fulltext_indexes").Exists() {
-		gjson.Get(string(sqlIndexesJ), "fulltext_indexes").ForEach(func(key, value gjson.Result) bool {
-			if tbl.Get("fulltext_indexes." + key.String()).Exists() {
-				// fmt.Println(tbl.Get("fulltext_indexes." + key.String() + ".columns").String())
-				// fmt.Println(tbl.Get("fulltext_indexes." + key.String() + ".with_parser").String())
-				if strings.Compare(value.Get("columns").String(), tbl.Get("fulltext_indexes."+key.String()+".columns").String()) == 0 {
-					// keepThisKey = true
-					// fmt.Println(">>>>>>保留==")
-					// fmt.Println("unqkey= ", key.String())
-					// fmt.Println("yml= ", tbl.Get("fulltext_indexes."+key.String()).String())
-					// fmt.Println("sql= ", value.String())
-					// fmt.Println("<<<<<===")
-				} else {
-					sql = fmt.Sprintf("%sDROP INDEX %s ON %s;\n",
-						sql,
-						key.String(),
-						tname,
-					)
-					sqlcol := ""
-					for _, v := range tbl.Get("fulltext_indexes." + key.String() + ".columns").Array() {
-						sqlcol = fmt.Sprintf("%s%s,", sqlcol, v)
-					}
-					sqlcol = sqlcol[:len(sqlcol)-1]
-					with_parser := tbl.Get("fulltext_indexes." + key.String() + ".with_parser").String()
-					if with_parser == "" {
-						with_parser = "ngram"
-					}
-					sql = fmt.Sprintf("%sCREATE FULLTEXT INDEX %s ON %s(%s) WITH PARSER %s;\n",
-						sql,
-						key.String(),
-						tname,
-						sqlcol,
-						with_parser,
-					)
-					// keepThisKey = false
-					// needReaddKey[key.String()] = true
-				}
-			} else {
-				dropIndexesSql = fmt.Sprintf("%sDROP INDEX %s ON %s;\n",
-					dropIndexesSql,
-					key.String(),
-					tname,
-				)
-				// if value.Get("columns")
-				// keepThisKey = false
-			}
-			return true
-		})
-	}
-	if gjson.Get(string(sqlIndexesJ), "indexes").Exists() {
-		gjson.Get(string(sqlIndexesJ), "indexes").ForEach(func(key, value gjson.Result) bool {
-			if tbl.Get("indexes." + key.String()).Exists() {
-				if strings.Compare(value.String(), tbl.Get("indexes."+key.String()).String()) == 0 {
-
-					// fmt.Println(">>>>>>保留==")
-					// fmt.Println("unqkey= ", key.String())
-					// fmt.Println("yml= ", tbl.Get("indexes."+key.String()).String())
-					// fmt.Println("sql= ", value.String())
-					// fmt.Println("<<<<<===")
-				} else {
-					sql = fmt.Sprintf("%sDROP INDEX %s ON %s;\n",
-						sql,
-						key.String(),
-						tname,
-					)
-					sqlcol := ""
-					for _, v := range tbl.Get("indexes." + key.String() + ".columns").Array() {
-						sqlcol = fmt.Sprintf("%s%s,", sqlcol, v)
-					}
-					sqlcol = sqlcol[:len(sqlcol)-1]
-					sql = fmt.Sprintf("%sCREATE INDEX %s ON %s(%s);\n",
-						sql,
-						key.String(),
-						tname,
-						sqlcol,
-					)
-
-					// fmt.Println(">>>>>>修改==")
-					// fmt.Println("unqkey= ", key.String())
-					// fmt.Println("yml= ", tbl.Get("indexes."+key.String()).String())
-					// fmt.Println("sql= ", value.String())
-					// fmt.Println("<<<<<===")
-				}
-			} else {
-				dropIndexesSql = fmt.Sprintf("%sDROP INDEX %s ON %s;\n",
-					dropIndexesSql,
-					key.String(),
-					tname,
-				)
-				// fmt.Println(">>>>>>丢弃==")
-				// fmt.Println("unqkey= ", key.String())
-				// fmt.Println("yml= ", tbl.Get("indexes."+key.String()).String())
-				// fmt.Println("sql= ", value.String())
-				// fmt.Println("<<<<<===")
-			}
-			return true
-		})
-	}
-	//计算新增索引
-	tbl.Get("unique_indexes").ForEach(func(key, value gjson.Result) bool {
-		if !gjson.Get(string(sqlIndexesJ), "unique_indexes."+key.String()).Exists() {
-			sqlcol := ""
-			for _, v := range value.Get("columns").Array() {
-				sqlcol = fmt.Sprintf("%s%s,", sqlcol, v)
-			}
-			sqlcol = sqlcol[:len(sqlcol)-1]
-			sql = fmt.Sprintf("%sCREATE UNIQUE INDEX %s ON %s(%s);\n",
-				sql,
-				key.String(),
-				tname,
-				sqlcol,
-			)
-		}
-
-		return true
-	})
-	tbl.Get("fulltext_indexes").ForEach(func(key, value gjson.Result) bool {
-		if !gjson.Get(string(sqlIndexesJ), "fulltext_indexes."+key.String()).Exists() {
-			sqlcol := ""
-			for _, v := range value.Get("columns").Array() {
-				sqlcol = fmt.Sprintf("%s%s,", sqlcol, v)
-			}
-			sqlcol = sqlcol[:len(sqlcol)-1]
-
-			with_parser := tbl.Get("fulltext_indexes." + key.String() + ".with_parser").String()
-			if with_parser == "" {
-				with_parser = "ngram"
-			}
-
-			sql = fmt.Sprintf("%sCREATE FULLTEXT INDEX %s ON %s(%s) WITH PARSER %s;\n",
-				sql,
-				key.String(),
-				tname,
-				sqlcol,
-				with_parser,
-			)
-		}
-		return true
-	})
-	tbl.Get("indexes").ForEach(func(key, value gjson.Result) bool {
-
-		if !gjson.Get(string(sqlIndexesJ), "indexes."+key.String()).Exists() {
-			sqlcol := ""
-			for _, v := range value.Get("columns").Array() {
-				sqlcol = fmt.Sprintf("%s%s,", sqlcol, v)
-			}
-			sqlcol = sqlcol[:len(sqlcol)-1]
-			sql = fmt.Sprintf("%sCREATE INDEX %s ON %s(%s);\n",
-				sql,
-				key.String(),
-				tname,
-				sqlcol,
-			)
-		}
-		return true
-	})
-	sql = fmt.Sprintf("%s%s%s", sql, dropIndexesSql, dropColumnsSql)
-
-	return sql
-}
-
-// 校验yml的合法行
-func (ts *YamlToSqlHandler) verifyYmlFile() *YamlToSqlHandler {
-	for k, table := range ts.tables {
-		tbJson := gjson.Get(table, "Table")
-		// fieldsMap := map[string]string{}
-		// if !tbJson.Get("id").Exists() {
-		// 	fmt.Printf("\x1b[%dm 配置文件不正确:'%s' \x1b[0m\n", 31, ts.yamlFileFullPaths[k])
-		// 	fmt.Printf("\x1b[%dm 缺少主键id \x1b[0m\n", 31)
-		// 	panic("配置文件不正确")
-		// }
-		// if !tbJson.Get("id.id").Exists() {
-		// 	fmt.Printf("\x1b[%dm 配置文件不正确:'%s' \x1b[0m\n", 31, ts.yamlFileFullPaths[k])
-		// 	fmt.Printf("\x1b[%dm 缺少主键id \x1b[0m\n", 31)
-		// 	panic("配置文件不正确")
-		// }
-		tbJson.Get("indexes").ForEach(func(key, value gjson.Result) bool {
-			if !value.Get("columns").IsArray() {
-				fmt.Printf("\x1b[%dm 配置文件不正确:'%s' \x1b[0m\n", 31, ts.yamlFileFullPaths[k])
-				fmt.Printf("\x1b[%dm indexes:'%s' is not array\x1b[0m\n", 31, key.String())
-				panic("配置文件不正确")
-			}
-			for _, v := range value.Get("columns").Array() {
-				if !tbJson.Get("fields."+v.String()).Exists() && !tbJson.Get("id."+v.String()).Exists() {
-					fmt.Printf("\x1b[%dm 配置文件不正确:'%s' \x1b[0m\n", 31, ts.yamlFileFullPaths[k])
-					fmt.Printf("\x1b[%dm indexes columns:'%s' is not find\x1b[0m\n", 31, v.String())
-					panic("配置文件不正确")
-				}
-			}
-			return true
-		})
-		tbJson.Get("unique_indexes").ForEach(func(key, value gjson.Result) bool {
-			if !value.Get("columns").IsArray() {
-				fmt.Printf("\x1b[%dm 配置文件不正确:'%s' \x1b[0m\n", 31, ts.yamlFileFullPaths[k])
-				fmt.Printf("\x1b[%dm indexes:'%s' is not array\x1b[0m\n", 31, key.String())
-				panic("配置文件不正确")
-			}
-			for _, v := range value.Get("columns").Array() {
-				if !tbJson.Get("fields."+v.String()).Exists() && !tbJson.Get("id."+v.String()).Exists() {
-					fmt.Printf("\x1b[%dm 配置文件不正确:'%s' \x1b[0m\n", 31, ts.yamlFileFullPaths[k])
-					fmt.Printf("\x1b[%dm indexes columns:'%s' is not find\x1b[0m\n", 31, v.String())
-					panic("配置文件不正确")
-				}
-			}
-			return true
-		})
-		tbJson.Get("fulltext_indexes").ForEach(func(key, value gjson.Result) bool {
-			if !value.Get("columns").IsArray() {
-				fmt.Printf("\x1b[%dm 配置文件不正确:'%s' \x1b[0m\n", 31, ts.yamlFileFullPaths[k])
-				fmt.Printf("\x1b[%dm indexes:'%s' is not array\x1b[0m\n", 31, key.String())
-				panic("配置文件不正确")
-			}
-			for _, v := range value.Get("columns").Array() {
-				if !tbJson.Get("fields."+v.String()).Exists() && !tbJson.Get("id."+v.String()).Exists() {
-					fmt.Printf("\x1b[%dm 配置文件不正确:'%s' \x1b[0m\n", 31, ts.yamlFileFullPaths[k])
-					fmt.Printf("\x1b[%dm indexes columns:'%s' is not find\x1b[0m\n", 31, v.String())
-					panic("配置文件不正确")
-				}
-			}
-			return true
-		})
-	}
-
+	ts.sql = newsql
+	ts.results = newresults
 	return ts
 }
 
@@ -1417,7 +841,7 @@ func (ts *YamlToSqlHandler) verifyYmlFile() *YamlToSqlHandler {
 func (ts *YamlToSqlHandler) ExecuteSchemaSafeCheck() *YamlToSqlHandler {
 	ts.connectSql()
 	ts.getyamlFileFullPaths().
-		getYamlDatas().verifyYmlFile().doSchema().doSqlSafe()
+		getYamlDatas().verifyYmlFile().loadDBSnapshot().doSchema().doSqlSafe()
 
 	return ts
 }
@@ -1426,7 +850,7 @@ func (ts *YamlToSqlHandler) ExecuteSchemaSafeCheck() *YamlToSqlHandler {
 func (ts *YamlToSqlHandler) ExecuteSchema() *YamlToSqlHandler {
 	ts.connectSql()
 	ts.getyamlFileFullPaths().
-		getYamlDatas().verifyYmlFile().doSchema().doSql()
+		getYamlDatas().verifyYmlFile().loadDBSnapshot().doSchema().doSql()
 
 	return ts
 }
@@ -1434,22 +858,7 @@ func (ts *YamlToSqlHandler) ExecuteSchema() *YamlToSqlHandler {
 // LoadSchema 加载编译后的表结构配置信息
 func (ts *YamlToSqlHandler) LoadSchema() *YamlToSqlHandler {
 	ts.connectSql()
-	ts.loadFromBuildSchema().verifyYmlFile().doSchema()
-	return ts
-}
-
-func (ts *YamlToSqlHandler) trimSql() *YamlToSqlHandler {
-
-	var newsql []string
-	for _, v := range ts.sql {
-		vv := strings.ReplaceAll(v, "\n", "")
-		vv = strings.ReplaceAll(vv, " ", "")
-		if vv == "" {
-			continue
-		}
-		newsql = append(newsql, v)
-	}
-	ts.sql = newsql
+	ts.loadFromBuildSchema().verifyYmlFile().loadDBSnapshot().doSchema()
 	return ts
 }
 
@@ -1459,50 +868,8 @@ func (ts *YamlToSqlHandler) VerifyIsCleanSchema() bool {
 	return len(ts.sql) < 1
 }
 
-// GetSql 获取需要执行的sql
-func (ts *YamlToSqlHandler) GetSql() []string {
-	return ts.sql
-}
-
 // DoSql 执行sql
 func (ts *YamlToSqlHandler) DoSql() *YamlToSqlHandler {
 	ts.doSqlSafe()
 	return ts
-}
-
-// 获取数据类型yml对应sql的映射
-func getTypeYml2SqlMapping(t string) string {
-	t = strings.ToLower(t)
-	value := t
-	switch t {
-	case "bigint":
-		value = "bigint(20)"
-	case "binary":
-		value = "binary(1)"
-	case "bit":
-		value = "bit(1)"
-	case "boolean", "bool":
-		value = "tinyint(1)"
-	case "char":
-		value = "char(1)"
-	case "decimal":
-		value = "decimal(10,0)"
-	case "int", "integer":
-		value = "int(11)"
-	case "mediumint":
-		value = "mediumint(9)"
-	case "smallint":
-		value = "smallint(6)"
-	case "tinyint":
-		value = "tinyint(4)"
-	case "varchar":
-		value = "varchar(255)"
-	case "year":
-		value = "year(4)"
-	case "integer unsigned", "int unsigned":
-		value = "int(10) unsigned"
-	}
-	// 剩下的是 INFORMATION_SCHEMA.COLUMNS 的column_type没有默认长度的字段，不需要映射
-
-	return value
 }

@@ -1,0 +1,63 @@
+# ══════════════════════════════════════════════════════════════
+# 用例 05：改可空性与默认值
+#   name: nullable false -> true    由 NOT NULL 放开为可空
+#   age : default 0 -> 18           改默认值
+# 两条都会生成 MODIFY COLUMN，变更报告的"原因"里会写清楚是哪一项不一致，
+# 例如：类型(int(11)->bigint(20)) 空不空(false->true) 默认(0->18)。
+# ══════════════════════════════════════════════════════════════
+Table:
+  type: entity
+  table: ds_case_demo
+  options:
+    charset: utf8mb4
+    collate: utf8mb4_general_ci
+    comment: 用例主表（改过注释）
+  id:
+    id:
+      type: integer unsigned
+      nullable: false
+      generator: AUTO_INCREMENT
+      comment: 主键
+  fields:
+    name:
+      type: varchar(64)
+      nullable: true                     # ← 由 false 改成 true
+      default: ''
+      comment: 名称（改过注释）
+    nickname:
+      type: varchar(64)
+      nullable: false
+      default: ''
+      comment: 昵称
+    age:
+      type: bigint
+      nullable: false
+      default: 18                        # ← 默认值由 0 改成 18
+      comment: 年龄
+    intro:
+      type: text
+      nullable: true
+      comment: 简介
+    created_at:
+      type: datetime
+      nullable: false
+      generator: DEFAULT CURRENT_TIMESTAMP
+      comment: 创建时间
+    updated_at:
+      type: datetime
+      nullable: false
+      generator: DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+      comment: 更新时间
+    remark:
+      type: varchar(255)
+      nullable: true
+      comment: 备注
+  indexes:
+    idx_name:
+      columns:
+        - name
+  unique_indexes:
+    unq_name_age:
+      columns:
+        - name
+        - age

@@ -1,0 +1,39 @@
+# ══════════════════════════════════════════════════════════════
+# 用例 21：编译产物（.value）与 LoadSchema 回读
+# 第一步：SetIsOutputBuildSchema(true, false, "") 把 yml 编译成一份 JSON 产物；
+# 第二步：换一个 handler，SetBuildSchemaDest 指向产物 + LoadSchema()，
+#         用 VerifyIsCleanSchema() 确认产物还原出来的结构与库里完全一致。
+#
+# 用途：线上不发布 yml，只发布编译产物；需要时还能加密
+#      SetIsOutputBuildSchema(true, true, "16位密钥")。
+# 产物顶层形状是 {"表名": 文档}，LoadSchema 就是按这个形状读的。
+# ══════════════════════════════════════════════════════════════
+Table:
+  type: entity
+  table: ds_case_build
+  options:
+    charset: utf8mb4
+    collate: utf8mb4_general_ci
+    comment: 编译产物用例表
+  id:
+    id:
+      type: integer unsigned
+      nullable: false
+      generator: AUTO_INCREMENT
+      comment: 主键
+  fields:
+    # 故意把字段名写成字母序倒排，用来验证产物回读后顺序不丢
+    zulu:
+      type: varchar(16)
+      nullable: false
+      default: '007'                     # 前导零必须原样保留，不能被当成数字 7
+      comment: 祖鲁
+    alpha:
+      type: varchar(16)
+      nullable: false
+      default: '1.10'                    # 末尾零同样要保留
+      comment: 阿尔法
+  indexes:
+    idx_zulu:
+      columns:
+        - zulu

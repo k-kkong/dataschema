@@ -1,0 +1,28 @@
+# ══════════════════════════════════════════════════════════════
+# 用例 24：递归扫描子目录
+#
+# 这份配置放在 nested/ 子目录下。
+# 默认 SetRecursive(false)，只扫 YamlPath 本层，所以用例 23 跑完它不该存在；
+# 用例 24 打开 SetRecursive(true) 后，它才会被扫到并建出来。
+#
+# 配置按业务模块分子目录存放时，这个开关就是必需的。
+# ══════════════════════════════════════════════════════════════
+Table:
+  type: entity
+  table: ds_case_f_deep
+  options:
+    charset: utf8mb4
+    collate: utf8mb4_general_ci
+    comment: 过滤用例表 deep（子目录，需开启递归才会被扫到）
+  id:
+    id:
+      type: integer unsigned
+      nullable: false
+      generator: AUTO_INCREMENT
+      comment: 主键
+  fields:
+    name:
+      type: varchar(32)
+      nullable: false
+      default: ''
+      comment: 名称

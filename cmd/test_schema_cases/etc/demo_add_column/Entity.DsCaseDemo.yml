@@ -1,0 +1,63 @@
+# ══════════════════════════════════════════════════════════════
+# 用例 02：新增字段
+# 相比 demo_create 多了两个字段，注意它们在 yml 中的位置：
+#   nickname 插在 name 后面  -> ADD COLUMN ... AFTER `name`
+#   remark   写在最末尾      -> ADD COLUMN ... AFTER `updated_at`
+# 新增列会按 yml 的顺序落位，而不是简单追加到表尾（SetKeepColumnOrder(false) 可关闭）。
+# ══════════════════════════════════════════════════════════════
+Table:
+  type: entity
+  table: ds_case_demo
+  options:
+    charset: utf8mb4
+    collate: utf8mb4_general_ci
+    comment: 用例主表
+  id:
+    id:
+      type: integer unsigned
+      nullable: false
+      generator: AUTO_INCREMENT
+      comment: 主键
+  fields:
+    name:
+      type: varchar(32)
+      nullable: false
+      default: ''
+      comment: 名称
+    nickname:                            # ← 新增，插在中间
+      type: varchar(64)
+      nullable: false
+      default: ''
+      comment: 昵称
+    age:
+      type: integer
+      nullable: false
+      default: 0
+      comment: 年龄
+    intro:
+      type: text
+      nullable: true
+      comment: 简介
+    created_at:
+      type: datetime
+      nullable: false
+      generator: DEFAULT CURRENT_TIMESTAMP
+      comment: 创建时间
+    updated_at:
+      type: datetime
+      nullable: false
+      generator: DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+      comment: 更新时间
+    remark:                              # ← 新增，写在末尾
+      type: varchar(255)
+      nullable: true                     # 可空且没写 default，会生成 DEFAULT NULL
+      comment: 备注
+  indexes:
+    idx_name:
+      columns:
+        - name
+  unique_indexes:
+    unq_name_age:
+      columns:
+        - name
+        - age

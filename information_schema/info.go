@@ -39,9 +39,13 @@ type YmlColum struct {
 type SqlTable struct {
 	TableName    string `gorm:"column:TABLE_NAME"`
 	TableComment string `gorm:"column:TABLE_COMMENT"`
+	// TableCollation 表的排序规则，用于检测 charset/collate 漂移
+	TableCollation string `gorm:"column:TABLE_COLLATION"`
 }
 
 type SqlIndexes struct {
+	// Table_name 索引所属的表名，批量查询多张表的索引时用于归属
+	Table_name   string `gorm:"column:Table_name"`
 	Non_unique   int    `gorm:"column:Non_unique"`
 	Key_name     string `gorm:"column:Key_name"`
 	Seq_in_index int    `gorm:"column:Seq_in_index"`

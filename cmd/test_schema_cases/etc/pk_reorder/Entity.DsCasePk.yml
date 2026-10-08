@@ -1,0 +1,33 @@
+# ══════════════════════════════════════════════════════════════
+# 用例 11：改主键顺序
+# primary_indexes 的列顺序由 (tenant_id, id) 改成 (id, tenant_id)。
+# 生成：ALTER TABLE `ds_case_pk` DROP PRIMARY KEY;
+#       ALTER TABLE `ds_case_pk` ADD PRIMARY KEY (`id`,`tenant_id`);
+# 主键顺序决定了聚簇索引的物理排序，属于破坏性变更（会重建整表），报告里标红。
+# ══════════════════════════════════════════════════════════════
+Table:
+  type: entity
+  table: ds_case_pk
+  options:
+    charset: utf8mb4
+    collate: utf8mb4_general_ci
+    comment: 主键用例表
+  primary_indexes:
+    columns:
+      - id                               # ← 顺序调整
+      - tenant_id
+  id:
+    tenant_id:
+      type: integer unsigned
+      nullable: false
+      comment: 租户
+    id:
+      type: integer unsigned
+      nullable: false
+      comment: 业务主键
+  fields:
+    name:
+      type: varchar(32)
+      nullable: false
+      default: ''
+      comment: 名称

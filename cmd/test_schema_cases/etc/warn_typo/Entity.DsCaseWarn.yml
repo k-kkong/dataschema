@@ -1,0 +1,41 @@
+# ══════════════════════════════════════════════════════════════
+# 用例 19：配置写错时只告警，不中断
+# 这份配置里有四处"手滑"，工具会逐条告警，但仍然把能建的部分建出来：
+#   1. options 下的 engin      —— 拼错了（工具也没有这个配置项）
+#   2. body 下的 defalut       —— 拼错了，正确写法是 default
+#   3. note 的 default 没写值  —— 会按 DEFAULT '' 处理，很可能是漏填
+#   4. 全文索引分词器 simple   —— 不是 MySQL 内置的（内置只有 ngram/mecab）
+#
+# 写错的配置项一定要让人看见：indexes 写成 index 就悄悄失效了，
+# 等到线上查询变慢才发现没建索引。
+# ══════════════════════════════════════════════════════════════
+Table:
+  type: entity
+  table: ds_case_warn
+  options:
+    charset: utf8mb4
+    collate: utf8mb4_general_ci
+    engin: InnoDB                        # ← 拼错，会被忽略并告警
+    comment: 告警用例表
+  id:
+    id:
+      type: integer unsigned
+      nullable: false
+      generator: AUTO_INCREMENT
+      comment: 主键
+  fields:
+    body:
+      type: text
+      nullable: true
+      defalut: ''                        # ← 拼错，会被忽略并告警
+      comment: 正文
+    note:
+      type: varchar(32)
+      nullable: false
+      default:                           # ← 忘了写值
+      comment: 说明
+  fulltext_indexes:
+    ft_body:
+      with_parser: simple                # ← 非内置分词器，会告警
+      columns:
+        - body

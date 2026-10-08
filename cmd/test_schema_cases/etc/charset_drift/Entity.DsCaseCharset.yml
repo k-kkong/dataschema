@@ -1,0 +1,29 @@
+# ══════════════════════════════════════════════════════════════
+# 用例 14 与 15：字符集漂移（同一份配置跑两次）
+# collate 由 utf8mb4_general_ci 改成 utf8mb4_unicode_ci，与库里的现状不一致。
+#
+# 默认只在变更报告里提示"跳过"，不会真的执行，因为
+# ALTER TABLE ... CONVERT TO CHARACTER SET 会重写整表数据，大表上属于高危操作。
+# 确认要同步时显式打开：SetSyncTableCharset(true)。
+#
+# 字符集与排序规则是参与比对的，漂移了一定会进变更报告，不会静默放过。
+# ══════════════════════════════════════════════════════════════
+Table:
+  type: entity
+  table: ds_case_charset
+  options:
+    charset: utf8mb4
+    collate: utf8mb4_unicode_ci          # ← 与库里的 utf8mb4_general_ci 不一致
+    comment: 字符集用例表
+  id:
+    id:
+      type: integer unsigned
+      nullable: false
+      generator: AUTO_INCREMENT
+      comment: 主键
+  fields:
+    title:
+      type: varchar(64)
+      nullable: false
+      default: ''
+      comment: 标题

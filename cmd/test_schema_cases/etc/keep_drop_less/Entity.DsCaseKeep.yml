@@ -1,0 +1,41 @@
+# ══════════════════════════════════════════════════════════════
+# 用例 17：DropPolicyNever（只报告，不删除）
+# 这一版从 yml 里删掉了 col_c 与 idx_c，但跑的时候设置了
+# SetDropPolicy(dataschema.DropPolicyNever)。
+#
+# 结果：变更报告里能看到两条"跳过"的破坏性变更（带原因），
+# 但不会生成任何 SQL，库里的 col_c / idx_c 原样保留。
+# 用例程序会去 information_schema 复查这两者确实还在。
+#
+# 默认值是 DropPolicyAlways，也就是用例 06 那种"yml 删了就真删"的行为。
+# ══════════════════════════════════════════════════════════════
+Table:
+  type: entity
+  table: ds_case_keep
+  options:
+    charset: utf8mb4
+    collate: utf8mb4_general_ci
+    comment: DropPolicy 用例表
+  id:
+    id:
+      type: integer unsigned
+      nullable: false
+      generator: AUTO_INCREMENT
+      comment: 主键
+  fields:
+    col_a:
+      type: varchar(32)
+      nullable: false
+      default: ''
+      comment: 字段A
+    col_b:
+      type: varchar(32)
+      nullable: false
+      default: ''
+      comment: 字段B
+    # col_c 从 yml 里删掉了               # ← 本次改动
+  indexes:
+    idx_b:
+      columns:
+        - col_b
+    # idx_c 从 yml 里删掉了               # ← 本次改动

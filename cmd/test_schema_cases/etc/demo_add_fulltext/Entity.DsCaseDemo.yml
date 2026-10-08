@@ -1,0 +1,68 @@
+# ══════════════════════════════════════════════════════════════
+# 用例 08：全文索引
+# 新增 fulltext_indexes.ft_intro，分词器 ngram（MySQL 内置）。
+# 生成：CREATE FULLTEXT INDEX `ft_intro` ON `ds_case_demo`(`intro`) WITH PARSER ngram;
+#
+# 两点要注意：
+#   1. with_parser 只有全文索引能写，写在普通/唯一索引上会直接报错；
+#   2. 不写 with_parser 时默认按 ngram 处理；写成非内置分词器（例如 simple）
+#      会告警提示"需要额外安装插件"，建表语句里不会带 WITH PARSER，
+#      但单独的 CREATE FULLTEXT INDEX 仍然原样带上，由数据库决定接不接受。
+# 只有 CHAR/VARCHAR/TEXT 类列能建全文索引，其它类型会告警。
+# ══════════════════════════════════════════════════════════════
+Table:
+  type: entity
+  table: ds_case_demo
+  options:
+    charset: utf8mb4
+    collate: utf8mb4_general_ci
+    comment: 用例主表（改过注释）
+  id:
+    id:
+      type: integer unsigned
+      nullable: false
+      generator: AUTO_INCREMENT
+      comment: 主键
+  fields:
+    name:
+      type: varchar(64)
+      nullable: true
+      default: ''
+      comment: 名称（改过注释）
+    nickname:
+      type: varchar(64)
+      nullable: false
+      default: ''
+      comment: 昵称
+    age:
+      type: bigint
+      nullable: false
+      default: 18
+      comment: 年龄
+    intro:
+      type: text
+      nullable: true
+      comment: 简介
+    created_at:
+      type: datetime
+      nullable: false
+      generator: DEFAULT CURRENT_TIMESTAMP
+      comment: 创建时间
+    updated_at:
+      type: datetime
+      nullable: false
+      generator: DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+      comment: 更新时间
+  indexes:
+    idx_name:
+      columns:
+        - name
+        - age
+    idx_created_at:
+      columns:
+        - created_at
+  fulltext_indexes:                      # ← 本次新增
+    ft_intro:
+      with_parser: ngram
+      columns:
+        - intro

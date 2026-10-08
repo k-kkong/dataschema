@@ -1,0 +1,41 @@
+# ══════════════════════════════════════════════════════════════
+# 用例 16：DropPolicy 的基线表（先建出来）
+# 下一版 keep_drop_less 会从 yml 里删掉 col_c 与 idx_c，
+# 用来对比 DropPolicyAlways（真删）与 DropPolicyNever（只报告）两种行为。
+# ══════════════════════════════════════════════════════════════
+Table:
+  type: entity
+  table: ds_case_keep
+  options:
+    charset: utf8mb4
+    collate: utf8mb4_general_ci
+    comment: DropPolicy 用例表
+  id:
+    id:
+      type: integer unsigned
+      nullable: false
+      generator: AUTO_INCREMENT
+      comment: 主键
+  fields:
+    col_a:
+      type: varchar(32)
+      nullable: false
+      default: ''
+      comment: 字段A
+    col_b:
+      type: varchar(32)
+      nullable: false
+      default: ''
+      comment: 字段B
+    col_c:
+      type: varchar(32)
+      nullable: false
+      default: ''
+      comment: 字段C
+  indexes:
+    idx_b:
+      columns:
+        - col_b
+    idx_c:
+      columns:
+        - col_c

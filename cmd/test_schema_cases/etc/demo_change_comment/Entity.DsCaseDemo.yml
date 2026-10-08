@@ -1,0 +1,63 @@
+# ══════════════════════════════════════════════════════════════
+# 用例 04：改注释
+#   表注释：用例主表 -> 用例主表（改过注释）
+#   列注释：name 的 comment 改写
+# 表注释走 ALTER TABLE ... COMMENT，列注释走 MODIFY COLUMN，
+# 两者在变更报告里是两条独立记录，一眼能看出"只是改注释，没动数据"。
+# ══════════════════════════════════════════════════════════════
+Table:
+  type: entity
+  table: ds_case_demo
+  options:
+    charset: utf8mb4
+    collate: utf8mb4_general_ci
+    comment: 用例主表（改过注释）        # ← 表注释变了
+  id:
+    id:
+      type: integer unsigned
+      nullable: false
+      generator: AUTO_INCREMENT
+      comment: 主键
+  fields:
+    name:
+      type: varchar(64)
+      nullable: false
+      default: ''
+      comment: 名称（改过注释）          # ← 列注释变了
+    nickname:
+      type: varchar(64)
+      nullable: false
+      default: ''
+      comment: 昵称
+    age:
+      type: bigint
+      nullable: false
+      default: 0
+      comment: 年龄
+    intro:
+      type: text
+      nullable: true
+      comment: 简介
+    created_at:
+      type: datetime
+      nullable: false
+      generator: DEFAULT CURRENT_TIMESTAMP
+      comment: 创建时间
+    updated_at:
+      type: datetime
+      nullable: false
+      generator: DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+      comment: 更新时间
+    remark:
+      type: varchar(255)
+      nullable: true
+      comment: 备注
+  indexes:
+    idx_name:
+      columns:
+        - name
+  unique_indexes:
+    unq_name_age:
+      columns:
+        - name
+        - age

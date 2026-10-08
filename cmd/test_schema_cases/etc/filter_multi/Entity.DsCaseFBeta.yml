@@ -1,0 +1,24 @@
+# ══════════════════════════════════════════════════════════════
+# 用例 23：表过滤与排除（filter_multi 目录下的第二张表）
+# 与 alpha 结构完全一样，只是表名与注释不同，
+# 目的是让"过滤后还剩几张表"这件事能被断言出来。
+# ══════════════════════════════════════════════════════════════
+Table:
+  type: entity
+  table: ds_case_f_beta
+  options:
+    charset: utf8mb4
+    collate: utf8mb4_general_ci
+    comment: 过滤用例表 beta
+  id:
+    id:
+      type: integer unsigned
+      nullable: false
+      generator: AUTO_INCREMENT
+      comment: 主键
+  fields:
+    name:
+      type: varchar(32)
+      nullable: false
+      default: ''
+      comment: 名称

@@ -1,0 +1,65 @@
+# ══════════════════════════════════════════════════════════════
+# 用例 03：改类型
+#   name: varchar(32) -> varchar(64)   扩大长度，安全变更
+#   age : integer     -> bigint        换类型，MySQL 会做数据转换
+# 只会生成 MODIFY COLUMN，不会重排列顺序（重排会触发整表重建）。
+#
+# 注意：类型比对是"归一化后"再比的，int 与 int(11)、integer 与 int
+# 都视为相同，所以 MySQL 5.7（回读带显示宽度）与 8.0（不带）都不会误报差异。
+# ══════════════════════════════════════════════════════════════
+Table:
+  type: entity
+  table: ds_case_demo
+  options:
+    charset: utf8mb4
+    collate: utf8mb4_general_ci
+    comment: 用例主表
+  id:
+    id:
+      type: integer unsigned
+      nullable: false
+      generator: AUTO_INCREMENT
+      comment: 主键
+  fields:
+    name:
+      type: varchar(64)                  # ← 由 varchar(32) 改宽
+      nullable: false
+      default: ''
+      comment: 名称
+    nickname:
+      type: varchar(64)
+      nullable: false
+      default: ''
+      comment: 昵称
+    age:
+      type: bigint                       # ← 由 integer 改成 bigint
+      nullable: false
+      default: 0
+      comment: 年龄
+    intro:
+      type: text
+      nullable: true
+      comment: 简介
+    created_at:
+      type: datetime
+      nullable: false
+      generator: DEFAULT CURRENT_TIMESTAMP
+      comment: 创建时间
+    updated_at:
+      type: datetime
+      nullable: false
+      generator: DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+      comment: 更新时间
+    remark:
+      type: varchar(255)
+      nullable: true
+      comment: 备注
+  indexes:
+    idx_name:
+      columns:
+        - name
+  unique_indexes:
+    unq_name_age:
+      columns:
+        - name
+        - age

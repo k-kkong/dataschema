@@ -1,0 +1,23 @@
+# ══════════════════════════════════════════════════════════════
+# 用例 13：字符集/排序规则（先按 utf8mb4_general_ci 建表）
+# 下一版 charset_drift 会把 collate 改成 utf8mb4_unicode_ci，用来演示漂移检测。
+# ══════════════════════════════════════════════════════════════
+Table:
+  type: entity
+  table: ds_case_charset
+  options:
+    charset: utf8mb4
+    collate: utf8mb4_general_ci
+    comment: 字符集用例表
+  id:
+    id:
+      type: integer unsigned
+      nullable: false
+      generator: AUTO_INCREMENT
+      comment: 主键
+  fields:
+    title:
+      type: varchar(64)
+      nullable: false
+      default: ''
+      comment: 标题
