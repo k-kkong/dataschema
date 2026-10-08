@@ -61,7 +61,7 @@ go run ./cmd/test_schema_cases -no-reset        # 开始前不清理上一轮留
 [参考文档：GenerateAllTblStruct](https://pkg.go.dev/github.com/k-kkong/dataschema#example-TblToStructHandler.GenerateAllTblStruct)
 
 ## 
-使用dvap ，可快捷加载嵌套的数据结构，实现动态的结构加载，可省去定义不同的结构体的内外键，解藕结构体防止互相引用，提升开发效率
+使用dvap2 ，可快捷加载嵌套的数据结构，实现动态的结构加载，可省去定义不同的结构体的内外键，解藕结构体防止互相引用，提升开发效率
 
 [参考文档：NewRelationLoader](https://pkg.go.dev/github.com/k-kkong/dataschema/dvap2#NewRelationLoader)
 
