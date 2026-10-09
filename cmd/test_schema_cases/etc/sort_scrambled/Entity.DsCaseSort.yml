@@ -1,0 +1,48 @@
+# ══════════════════════════════════════════════════════════════
+# 用例 26 与 27 的前置：字段顺序被打乱的同一张表
+#
+# 字段、类型、可空性、默认值、注释、索引与 sort_fields 完全相同，
+# 只有书写顺序不同：id, gamma, alpha, delta, beta。
+#
+# 用例程序先用这份配置把表建出来，再去跑 sort_fields 的排序。
+# 用库自己建表而不是手写 CREATE TABLE，是为了保证两边的列定义逐项相同，
+# 这样表里剩下的唯一差异就是字段顺序，检验的才是排序本身。
+# ══════════════════════════════════════════════════════════════
+Table:
+  type: entity
+  table: ds_case_sort
+  options:
+    charset: utf8mb4
+    collate: utf8mb4_general_ci
+    comment: 字段排序用例表
+  id:
+    id:
+      type: integer unsigned
+      nullable: false
+      generator: AUTO_INCREMENT
+      comment: 主键
+  fields:
+    gamma:
+      type: varchar(32)
+      nullable: false
+      default: ''
+      comment: 字段C
+    alpha:
+      type: varchar(32)
+      nullable: false
+      default: ''
+      comment: 字段A
+    delta:
+      type: varchar(32)
+      nullable: false
+      default: ''
+      comment: 字段D
+    beta:
+      type: varchar(32)
+      nullable: false
+      default: ''
+      comment: 字段B
+  indexes:
+    idx_alpha:
+      columns:
+        - alpha

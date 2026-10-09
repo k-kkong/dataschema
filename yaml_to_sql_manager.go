@@ -531,12 +531,17 @@ func (ts *YamlToSqlHandler) loadDBSnapshot() *YamlToSqlHandler {
 	return ts
 }
 
-func (ts *YamlToSqlHandler) doSchema() *YamlToSqlHandler {
-	opt := diffOption{
+// diffOpt 把 handler 上的开关收拢成比对参数，结构同步与字段排序共用
+func (ts *YamlToSqlHandler) diffOpt() diffOption {
+	return diffOption{
 		dropPolicy:      ts.dropPolicy,
 		keepColumnOrder: ts.keepColumnOrder,
 		syncCharset:     ts.syncCharset,
 	}
+}
+
+func (ts *YamlToSqlHandler) doSchema() *YamlToSqlHandler {
+	opt := ts.diffOpt()
 	ts.results = nil
 	ts.sql = nil
 	ts.changes = nil
@@ -553,6 +558,80 @@ func (ts *YamlToSqlHandler) doSchema() *YamlToSqlHandler {
 		ts.results = append(ts.results, tableResult{table: t.Name, source: t.SourceFile, sql: sqlText, changes: changes})
 		ts.sql = append(ts.sql, sqlText)
 		ts.changes = append(ts.changes, changes...)
+	}
+	return ts
+}
+
+// doSortFields 算出把每张表的字段顺序调整成 yml 声明顺序所需的语句。
+//
+// 只挪位置、不改定义，所以前提是结构已经与配置一致：
+// 任何 ExecuteSchema 能修的差异都会被完整列出来并终止，
+// 避免在结构不一致的表上重排（重排用的是 MODIFY COLUMN，会顺带重述列定义）。
+// 问题一次报齐，使用者改一轮就能过，不用一张表一张表地试。
+func (ts *YamlToSqlHandler) doSortFields() *YamlToSqlHandler {
+	opt := ts.diffOpt()
+	var problems []string
+	ts.results = nil
+	ts.sql = nil
+	ts.changes = nil
+
+	// 没有变更的表也要占一个下标，schemas/results/sql 三者必须一一对应
+	noChange := func(t *ymlTable) {
+		ts.results = append(ts.results, tableResult{table: t.Name, source: t.SourceFile, sql: "\n"})
+		ts.sql = append(ts.sql, "\n")
+	}
+
+	for _, t := range ts.schemas {
+		st, ok := ts.states[t.Name]
+		if !ok {
+			st = newDBTableState(t.Name)
+		}
+		bad, err := checkSortable(t, st, opt)
+		if err != nil {
+			fmt.Printf("\x1b[%dm 文件: %s 表: %s 不正确: %s\x1b[0m\n", 31, t.SourceFile, t.Name, err.Error())
+			panic("配置文件不正确")
+		}
+		if len(bad) > 0 {
+			for _, p := range bad {
+				problems = append(problems, fmt.Sprintf("表 %s (%s)：%s", t.Name, t.SourceFile, p))
+			}
+			noChange(t)
+			continue
+		}
+
+		dbOrder := make([]string, 0, len(st.Columns))
+		for _, c := range st.Columns {
+			dbOrder = append(dbOrder, c.Name)
+		}
+		moves := planColumnSort(t.Columns, dbOrder)
+		if len(moves) == 0 {
+			noChange(t)
+			continue
+		}
+
+		stmt := buildSortColumnsSQL(t.Name, moves)
+		change := SchemaChange{
+			Table:     t.Name,
+			Kind:      ChangeColumnOrder,
+			Reason:    sortReason(dbOrder, t.Columns, moves),
+			Dangerous: true,
+			SQL:       stmt,
+		}
+		// 表级 SQL 以换行开头，与结构同步的输出形态保持一致
+		sqlText := "\n" + stmt
+		ts.results = append(ts.results, tableResult{
+			table: t.Name, source: t.SourceFile, sql: sqlText, changes: []SchemaChange{change},
+		})
+		ts.sql = append(ts.sql, sqlText)
+		ts.changes = append(ts.changes, change)
+	}
+
+	if len(problems) > 0 {
+		fmt.Printf("\x1b[%dm 字段顺序无法同步：以下表的结构与配置不一致 \x1b[0m\n", 31)
+		for _, p := range problems {
+			fmt.Printf("\x1b[%dm  × %s \x1b[0m\n", 31, p)
+		}
+		panic("表结构与配置不一致，请先执行 ExecuteSchema 同步结构后再排序")
 	}
 	return ts
 }
@@ -851,6 +930,36 @@ func (ts *YamlToSqlHandler) ExecuteSchema() *YamlToSqlHandler {
 	ts.connectSql()
 	ts.getyamlFileFullPaths().
 		getYamlDatas().verifyYmlFile().loadDBSnapshot().doSchema().doSql()
+
+	return ts
+}
+
+// SortFieldsWithYamlSafeCheck 把数据库里的字段顺序调整成 yml 声明的顺序（安全操作，执行前需要输入 Y 确认）
+//
+// 与 ExecuteSchema 的分工：
+//   - ExecuteSchema 同步结构，新增的列按 yml 顺序落位，但已经存在的列一律不挪位置；
+//   - 本方法只挪位置，不改任何列定义。
+//
+// 前提是结构已经与配置一致，否则会把全部差异列出来并终止，请先执行 ExecuteSchema。
+//
+// 挪动已有字段用的是 MODIFY COLUMN，MySQL 会为它重建整表，耗时与磁盘占用都跟表的
+// 数据量成正比。大表请安排在低峰期，或先用 SetDryRun(true) + SetSqlExportPath
+// 把语句导出走 DBA 审核，也可以用 gh-ost / pt-online-schema-change 执行导出的语句。
+func (ts *YamlToSqlHandler) SortFieldsWithYamlSafeCheck() *YamlToSqlHandler {
+	ts.connectSql()
+	ts.getyamlFileFullPaths().
+		getYamlDatas().verifyYmlFile().loadDBSnapshot().doSortFields().doSqlSafe()
+
+	return ts
+}
+
+// SortFieldsWithYaml 把数据库里的字段顺序调整成 yml 声明的顺序（直接执行，不再确认）
+//
+// 适用场景与注意事项同 SortFieldsWithYamlSafeCheck，区别只是不停下来等人输入 Y。
+func (ts *YamlToSqlHandler) SortFieldsWithYaml() *YamlToSqlHandler {
+	ts.connectSql()
+	ts.getyamlFileFullPaths().
+		getYamlDatas().verifyYmlFile().loadDBSnapshot().doSortFields().doSql()
 
 	return ts
 }

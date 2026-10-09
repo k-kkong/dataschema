@@ -39,8 +39,10 @@ func quoteIdentList(names []string) string {
 
 // columnDefOption 生成列定义时的可选项
 type columnDefOption struct {
-	// position 是新增列的位置声明（FIRST / AFTER `x`），空表示追加到末尾。
-	// 只有 ADD COLUMN 支持，MODIFY COLUMN 不做重排（重排会触发表重建，风险太高）。
+	// position 是列的位置声明（FIRST / AFTER `x`），空表示不指定位置。
+	// ADD COLUMN 用它决定新列落位；MODIFY COLUMN 用它重排已有列。
+	// 重排会触发整表重建，所以只有显式调用 SortFieldsWithYaml 时才会生成，
+	// 日常的结构同步不会动已有列的位置。
 	position string
 }
 
@@ -149,6 +151,21 @@ func buildAddColumnSQL(tableName string, c *ymlColumn, position string) string {
 func buildModifyColumnSQL(tableName string, c *ymlColumn) string {
 	return fmt.Sprintf("ALTER TABLE %s MODIFY COLUMN %s;\n",
 		quoteIdent(tableName), buildColumnDefinition(c, columnDefOption{}))
+}
+
+// buildSortColumnsSQL 生成"把若干字段调整到指定位置"的语句。
+//
+// 所有移动合并进同一条 ALTER TABLE：MySQL 对一条 ALTER 只重建一次整表，
+// 拆成多条语句就变成移动几列重建几次，大表上代价差很多。
+// 子句按目标顺序排列，每个 AFTER 引用的列在它之前已经就位，
+// 所以按子句顺序依次生效就能得到目标顺序。
+func buildSortColumnsSQL(tableName string, moves []columnMove) string {
+	clauses := make([]string, 0, len(moves))
+	for _, m := range moves {
+		clauses = append(clauses, "MODIFY COLUMN "+
+			buildColumnDefinition(m.Column, columnDefOption{position: m.Position}))
+	}
+	return fmt.Sprintf("ALTER TABLE %s %s;\n", quoteIdent(tableName), strings.Join(clauses, ", "))
 }
 
 // buildDropColumnSQL 生成删除列语句

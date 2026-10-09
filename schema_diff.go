@@ -25,6 +25,7 @@ const (
 	ChangeRebuildIndex = "重建索引"
 	ChangeDropIndex    = "删除索引"
 	ChangePrimaryKey   = "主键"
+	ChangeColumnOrder  = "列顺序"
 )
 
 // SchemaChange 一条结构变更记录

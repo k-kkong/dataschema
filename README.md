@@ -12,7 +12,7 @@
 | 想看什么 | 去哪里 |
 | --- | --- |
 | 每种能力怎么调（代码 + 注释） | [`example_test.go`](./example_test.go)，搜 `ExampleYamlToSqlHandler_` |
-| 每种情况跑起来到底是什么样 | [`cmd/test_schema_cases`](./cmd/test_schema_cases)，一条命令跑完 27 个用例并自带断言 |
+| 每种情况跑起来到底是什么样 | [`cmd/test_schema_cases`](./cmd/test_schema_cases)，一条命令跑完 30 个用例并自带断言 |
 | yml 到底怎么写 | [`cmd/test_schema_cases/etc/`](./cmd/test_schema_cases/etc)，每个子目录就是“同一张表的一个版本”，文件头有注释 |
 
 `cmd/test_schema_cases` 覆盖的情况：
@@ -20,7 +20,8 @@
 建表、幂等复检、新增字段、改类型、改注释、改可空性与默认值、删除字段、
 索引的增删改、全文索引、删除索引、主键（建表 / 改顺序 / 删除）、
 字符集漂移、DropPolicy、分表、配置告警、配置报错、
-DryRun 导出 SQL、编译产物回读、表过滤与排除、递归扫描、迁移历史。
+DryRun 导出 SQL、编译产物回读、表过滤与排除、递归扫描、迁移历史、
+字段排序（预览 / 执行 / 结构未同步时拒绝）。
 
 每个用例都会走四步：
 
@@ -51,8 +52,41 @@ go run ./cmd/test_schema_cases -no-reset        # 开始前不清理上一轮留
 > 用例之间有先后依赖（`ds_case_demo` 从 01 到 09 是一条演进链，24 依赖 23 已经建好表），
 > 所以 `-only` 只适合已经跑过一整轮之后重复观察某个用例。
 
-不想连数据库也能看的部分：解析、类型归一化、结构化比对这三层都是纯函数，
+不想连数据库也能看的部分：解析、类型归一化、结构化比对、排序算法这四层都是纯函数，
 直接 `go test .` 就能跑，不需要任何数据库。
+其中 `schema_sort_test.go` 会穷举 1~6 个字段的全部 873 种排列，
+验证排序结果正确且移动的字段数是最小的。
+
+### 字段顺序：ExecuteSchema 与 SortFieldsWithYaml 的分工
+
+这两个动作是分开的，因为代价完全不同：
+
+| 方法 | 做什么 | 代价 |
+| --- | --- | --- |
+| `ExecuteSchema` / `ExecuteSchemaSafeCheck` | 同步结构：建表、增删改字段、索引、主键、表注释 | 新增的列按 yml 顺序落位；**已经存在的列一律不挪位置** |
+| `SortFieldsWithYaml` / `SortFieldsWithYamlSafeCheck` | 只把字段顺序调成 yml 声明的顺序，不改任何列定义 | 用 `MODIFY COLUMN`，**MySQL 会重建整表**，耗时与磁盘占用跟数据量成正比 |
+
+一般用法：平时只跑 `ExecuteSchema`；确实需要把存量表的字段顺序对齐时，
+再单独接入 `SortFieldsWithYaml`，由使用者自己决定什么时机做。
+
+排序的几个要点：
+
+- **前提是结构已经与配置一致**。字段多一个少一个、类型/注释/默认值/索引有差异，
+  会把问题一次全部列出来并终止，提示先执行 `ExecuteSchema`。
+  这是因为排序要重述列定义，带着差异排序会顺带改掉它。
+- **移动的字段数取最小值**：等于总字段数减去两个顺序的最长公共子序列长度。
+  典型场景（后补的字段被追加到了表尾）往往只需要挪 1 个。
+- **全部移动合并进同一条 `ALTER TABLE`**，MySQL 只重建一次整表；
+  拆成多条语句就变成挪几列重建几次。
+- **带生成列、空间参考系、列不可见这类无法从配置还原的属性时拒绝重排**，
+  因为 `MODIFY COLUMN` 会把它们抹掉。
+- 大表建议先 `SetDryRun(true)` + `SetSqlExportPath` 把语句导出走 DBA 审核，
+  或改用 gh-ost / pt-online-schema-change 执行导出的语句。
+
+对应的可运行用例是 `cmd/test_schema_cases` 里的 26 / 27 / 28，
+配置在 [`etc/sort_fields`](./cmd/test_schema_cases/etc/sort_fields)、
+[`etc/sort_scrambled`](./cmd/test_schema_cases/etc/sort_scrambled)、
+[`etc/sort_dirty`](./cmd/test_schema_cases/etc/sort_dirty) 三个目录。
 
 
 ## 

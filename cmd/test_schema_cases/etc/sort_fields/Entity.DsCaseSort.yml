@@ -1,0 +1,54 @@
+# ══════════════════════════════════════════════════════════════
+# 用例 26 与 27：字段排序的目标顺序
+#
+# 这里声明的顺序就是希望数据库里最终呈现的顺序：
+#   id, alpha, beta, gamma, delta
+#
+# sort_scrambled 目录里是同一张表、同样的字段、同样的定义，
+# 只是书写顺序被打乱成 id, gamma, alpha, delta, beta。
+# 用例先用 sort_scrambled 把表建出来，再对本目录调用 SortFieldsWithYaml，
+# 这样表里就只有"顺序"这一处差异，检验的正是排序本身。
+#
+# 排序用的是 MODIFY COLUMN，MySQL 会为它重建整表，所以：
+#   - 结构必须已经与配置一致，否则会直接报错要求先执行 ExecuteSchema（见用例 28）；
+#   - 需要移动的字段数取最小值（总数 - 最长公共子序列长度），本例是 5 - 3 = 2 个；
+#   - 全部移动合并进同一条 ALTER TABLE，只重建一次整表。
+# ══════════════════════════════════════════════════════════════
+Table:
+  type: entity
+  table: ds_case_sort
+  options:
+    charset: utf8mb4
+    collate: utf8mb4_general_ci
+    comment: 字段排序用例表
+  id:
+    id:
+      type: integer unsigned
+      nullable: false
+      generator: AUTO_INCREMENT
+      comment: 主键
+  fields:
+    alpha:
+      type: varchar(32)
+      nullable: false
+      default: ''
+      comment: 字段A
+    beta:
+      type: varchar(32)
+      nullable: false
+      default: ''
+      comment: 字段B
+    gamma:
+      type: varchar(32)
+      nullable: false
+      default: ''
+      comment: 字段C
+    delta:
+      type: varchar(32)
+      nullable: false
+      default: ''
+      comment: 字段D
+  indexes:
+    idx_alpha:
+      columns:
+        - alpha

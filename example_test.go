@@ -389,3 +389,55 @@ func ExampleYamlToSqlHandler_ExecuteSchema_sharding() {
 
 	fmt.Println("展开后的物理表：", h.GetTables())
 }
+
+// 案例：把数据库里的字段顺序调整成 yml 声明的顺序。
+//
+// 与 ExecuteSchema 的分工：
+//   - ExecuteSchema 同步结构，新增的列按 yml 顺序落位，但已经存在的列一律不挪位置；
+//   - SortFieldsWithYaml 只挪位置，不改任何列定义。
+//
+// 之所以分成两个入口：挪动已有字段用的是 MODIFY COLUMN，MySQL 会为它重建整表，
+// 耗时与磁盘占用都跟表的数据量成正比，属于必须由使用者显式决定的操作，
+// 不该藏在"同步结构"这个日常动作里顺带发生。
+//
+// 前提是结构已经与配置一致。字段多一个少一个、类型/注释/默认值/索引有差异，
+// 都会把问题一次全部列出来并终止，提示先执行 ExecuteSchema。
+//
+// SortFieldsWithYamlSafeCheck 是同一件事的交互版本：
+// 先打印变更报告，等使用者输入 Y 才执行。
+func ExampleYamlToSqlHandler_SortFieldsWithYaml() {
+	if exampleDSN() == "" {
+		return
+	}
+
+	NewYamlToSqlHandler().
+		SetDsn(exampleDSN()).
+		SetYamlPath("./cmd/test_schema_cases/etc/sort_fields/").
+		SortFieldsWithYaml()
+}
+
+// 案例：排序前先看清楚要挪哪些字段，一条都不执行。
+//
+// 变更原因里会写明当前顺序、目标顺序、需要移动哪几个字段。
+// 移动的字段数取最小值（总字段数减去两个顺序的最长公共子序列长度），
+// 并且全部合并进同一条 ALTER TABLE —— MySQL 对一条 ALTER 只重建一次整表，
+// 拆成多条语句就变成挪几列重建几次。
+//
+// 大表建议先用 SetSqlExportPath 把语句导出交给 DBA，
+// 或改用 gh-ost / pt-online-schema-change 执行导出的语句。
+func ExampleYamlToSqlHandler_SortFieldsWithYaml_dryRun() {
+	if exampleDSN() == "" {
+		return
+	}
+
+	h := NewYamlToSqlHandler().
+		SetDsn(exampleDSN()).
+		SetYamlPath("./cmd/test_schema_cases/etc/sort_fields/").
+		SetDryRun(true).
+		SetSqlExportPath(filepath.Join(os.TempDir(), "sort_fields.sql"))
+	h.SortFieldsWithYamlSafeCheck()
+
+	for _, c := range h.GetChangeReport() {
+		fmt.Printf("%s %s：%s\n", c.Table, c.Kind, c.Reason)
+	}
+}

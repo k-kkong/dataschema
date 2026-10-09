@@ -1,0 +1,55 @@
+# ══════════════════════════════════════════════════════════════
+# 用例 28：结构还没同步时，排序必须拒绝执行
+#
+# 这份配置比库里的 ds_case_sort 多声明了一个 epsilon 字段。
+# 排序只挪位置、不改定义，字段集合对不上就没法确定"严格顺序"，
+# 所以要把差异列清楚并终止，提示先执行 ExecuteSchema。
+#
+# 同样会被拦住的还有：库里多出配置没声明的字段、字段类型/注释/默认值有差异、
+# 索引或表注释不一致、以及带生成列这类无法从配置还原的属性。
+#
+# 不会拦住的：字符集漂移（ExecuteSchema 默认也不处理它，拦了会陷入死循环）。
+# ══════════════════════════════════════════════════════════════
+Table:
+  type: entity
+  table: ds_case_sort
+  options:
+    charset: utf8mb4
+    collate: utf8mb4_general_ci
+    comment: 字段排序用例表
+  id:
+    id:
+      type: integer unsigned
+      nullable: false
+      generator: AUTO_INCREMENT
+      comment: 主键
+  fields:
+    alpha:
+      type: varchar(32)
+      nullable: false
+      default: ''
+      comment: 字段A
+    beta:
+      type: varchar(32)
+      nullable: false
+      default: ''
+      comment: 字段B
+    gamma:
+      type: varchar(32)
+      nullable: false
+      default: ''
+      comment: 字段C
+    delta:
+      type: varchar(32)
+      nullable: false
+      default: ''
+      comment: 字段D
+    epsilon:                             # ← 库里没有这个字段
+      type: varchar(32)
+      nullable: false
+      default: ''
+      comment: 字段E
+  indexes:
+    idx_alpha:
+      columns:
+        - alpha

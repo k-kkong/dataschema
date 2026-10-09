@@ -200,10 +200,38 @@ func runCase(c tcase, e *env, verbose bool) []string {
 	fmt.Printf("【%s】%s\n", c.name, c.desc)
 	fmt.Printf("配置目录：%s\n", filepath.Join(e.base, "etc", c.dir))
 
+	// 预览与执行分别走哪个入口由 sortMode 决定：
+	// 结构同步走 ExecuteSchema*，字段排序走 SortFieldsWithYaml*。
+	// 两边都先用 SafeCheck 版本预览（DryRun 下它不会停下来等确认），
+	// 真执行时用不带确认的那个，否则用例程序会卡在等待输入 Y 上。
+	preview := func(h *dataschema.YamlToSqlHandler) {
+		if c.sortMode {
+			h.SortFieldsWithYamlSafeCheck()
+			return
+		}
+		h.ExecuteSchemaSafeCheck()
+	}
+	execute := func(h *dataschema.YamlToSqlHandler) {
+		if c.sortMode {
+			h.SortFieldsWithYaml()
+			return
+		}
+		h.ExecuteSchema()
+	}
+
+	// 有些用例需要先把库弄成一个特定状态，例如造一张字段顺序被打乱的表
+	if c.prepare != nil {
+		if err := c.prepare(e); err != nil {
+			fail("前置准备失败：%v", err)
+			return finish(c, fails, logs, verbose)
+		}
+	}
+
 	// ---- 第一步：DryRun 预览，比对期望的变更清单 ----
 	var (
 		got     []string
 		warns   []string
+		reasons []string
 		sqlText string
 	)
 	out, rec := capture(func() {
@@ -211,8 +239,9 @@ func runCase(c tcase, e *env, verbose bool) []string {
 		if c.config != nil {
 			h = c.config(e, h)
 		}
-		h.ExecuteSchemaSafeCheck()
+		preview(h)
 		got = summarize(h.GetChangeReport())
+		reasons = reasonListOf(h.GetChangeReport())
 		warns = h.GetWarnings()
 		sqlText = strings.Join(h.GetSql(), "\n")
 	})
@@ -239,6 +268,14 @@ func runCase(c tcase, e *env, verbose bool) []string {
 		fail("变更清单不符\n    期望：%s\n    实际：%s", joinList(c.want), joinList(got))
 	} else {
 		fmt.Printf("  通过：变更清单 = [%s]\n", joinList(got))
+	}
+	for _, w := range c.wantReason {
+		if !containsAny(reasons, w) {
+			fail("期望变更原因里出现 %q，实际：%s", w, joinList(reasons))
+		}
+	}
+	if len(c.wantReason) > 0 {
+		fmt.Printf("  通过：变更原因符合预期\n")
 	}
 	for _, w := range c.wantWarn {
 		if !containsAny(warns, w) {
@@ -269,7 +306,7 @@ func runCase(c tcase, e *env, verbose bool) []string {
 			if c.config != nil {
 				h = c.config(e, h)
 			}
-			h.ExecuteSchema()
+			execute(h)
 		})
 		logs = append(logs, "----- 执行阶段 -----\n"+out)
 		if rec != nil {
@@ -285,7 +322,7 @@ func runCase(c tcase, e *env, verbose bool) []string {
 				if c.config != nil {
 					h = c.config(e, h)
 				}
-				h.ExecuteSchemaSafeCheck()
+				preview(h)
 				pending = pendingCount(h.GetChangeReport())
 			})
 			logs = append(logs, "----- 幂等复检 -----\n"+out)
@@ -369,6 +406,15 @@ func summarize(changes []dataschema.SchemaChange) []string {
 			s += "(跳过)"
 		}
 		out = append(out, s)
+	}
+	return out
+}
+
+// reasonListOf 把每条变更的原因拼成一行，用于断言报告里的说明文字
+func reasonListOf(changes []dataschema.SchemaChange) []string {
+	out := make([]string, 0, len(changes))
+	for _, c := range changes {
+		out = append(out, c.Kind+" "+c.Object+"："+c.Reason)
 	}
 	return out
 }

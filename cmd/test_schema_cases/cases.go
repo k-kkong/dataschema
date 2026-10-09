@@ -17,17 +17,20 @@ type tcase struct {
 	dir  string // etc/ 下的配置目录，一个目录就是"表结构的一个版本"
 	desc string // 一句话说明
 
-	config    func(e *env, h *dataschema.YamlToSqlHandler) *dataschema.YamlToSqlHandler // 需要额外开关时用
-	want      []string                                                                  // 期望的变更清单
-	wantWarn  []string                                                                  // 期望出现的告警关键字
-	sqlHas    []string                                                                  // 生成的 SQL 里应该有的片段
-	sqlNot    []string                                                                  // 生成的 SQL 里不该有的片段
-	wantPanic string                                                                    // 期望解析阶段直接终止，且输出里含该关键字
+	config     func(e *env, h *dataschema.YamlToSqlHandler) *dataschema.YamlToSqlHandler // 需要额外开关时用
+	want       []string                                                                  // 期望的变更清单
+	wantReason []string                                                                  // 期望出现在变更原因里的关键字
+	wantWarn   []string                                                                  // 期望出现的告警关键字
+	sqlHas     []string                                                                  // 生成的 SQL 里应该有的片段
+	sqlNot     []string                                                                  // 生成的 SQL 里不该有的片段
+	wantPanic  string                                                                    // 期望解析阶段直接终止，且输出里含该关键字
 
-	dryOnly bool               // 只预览不执行
-	noIdem  bool               // 跳过"再跑一次应为 0 变更"的幂等复检
-	check   func(e *env) error // 执行完复查数据库真实状态
-	extra   func(e *env) error // 附加流程（例如编译产物回读）
+	sortMode bool               // 走 SortFieldsWithYaml* 而不是 ExecuteSchema*
+	dryOnly  bool               // 只预览不执行
+	noIdem   bool               // 跳过"再跑一次应为 0 变更"的幂等复检
+	prepare  func(e *env) error // 前置准备，在预览之前执行
+	check    func(e *env) error // 执行完复查数据库真实状态
+	extra    func(e *env) error // 附加流程（例如编译产物回读）
 }
 
 // cases 用例清单，顺序就是执行顺序。
@@ -35,6 +38,7 @@ type tcase struct {
 // ds_case_demo 这张表从 01 到 09 是一条演进链：后一个版本是在前一个版本的基础上改的，
 // 所以用例之间有先后依赖，不能单独乱序跑（-only 参数只适合已经跑过一整轮之后重复观察）。
 // 23 与 24 共用 filter_multi 目录，24 依赖 23 已经把 alpha/beta 建好，同样有顺序要求。
+// 26/27/28 各自带 prepare，会先把 ds_case_sort 重建成打乱顺序的样子，所以可以单独跑。
 func cases() []tcase {
 	return []tcase{
 		// ---------------------------------------------------------------
@@ -540,7 +544,98 @@ func cases() []tcase {
 				return eq("历史记录归属的表", owner, "ds_case_dry")
 			},
 		},
+
+		// ---------------------------------------------------------------
+		// ds_case_sort：SortFieldsWithYaml 字段排序
+		// ---------------------------------------------------------------
+		{
+			name:     "26 字段排序（预览）",
+			dir:      "sort_fields",
+			desc:     "表里只有字段顺序与配置不一致，DryRun 看一下要挪哪几个、合成几条语句",
+			sortMode: true,
+			dryOnly:  true,
+			prepare:  prepareScrambledSortTable,
+			want:     []string{"ds_case_sort/列顺序(高危)"},
+			wantReason: []string{
+				"[id,gamma,alpha,delta,beta]",
+				"[id,alpha,beta,gamma,delta]",
+				"需移动 2 个字段",
+				"重建整表",
+			},
+			// 所有移动合并进同一条 ALTER TABLE，MySQL 对一条 ALTER 只重建一次整表
+			sqlHas: []string{"ALTER TABLE `ds_case_sort` MODIFY COLUMN"},
+			check: func(e *env) error {
+				cols, err := columnOrder(e, "ds_case_sort")
+				if err != nil {
+					return err
+				}
+				return eqList("DryRun 不该改库，顺序应保持打乱的样子", cols,
+					[]string{"id", "gamma", "alpha", "delta", "beta"})
+			},
+		},
+		{
+			name:     "27 字段排序（执行 + 幂等）",
+			dir:      "sort_fields",
+			desc:     "真执行排序，完成后列顺序必须与配置逐项一致，再排一次应为 0 变更",
+			sortMode: true,
+			prepare:  prepareScrambledSortTable,
+			want:     []string{"ds_case_sort/列顺序(高危)"},
+			check: func(e *env) error {
+				cols, err := columnOrder(e, "ds_case_sort")
+				if err != nil {
+					return err
+				}
+				if err := eqList("排序后的列顺序", cols,
+					[]string{"id", "alpha", "beta", "gamma", "delta"}); err != nil {
+					return err
+				}
+				// 排序只挪位置，列定义与索引都不该被碰到
+				decl, comment, nullable, def, err := columnInfo(e, "ds_case_sort", "beta")
+				if err != nil {
+					return err
+				}
+				if err := eq("beta 的类型", decl, "varchar(32)"); err != nil {
+					return err
+				}
+				if err := eq("beta 的注释", comment, "字段B"); err != nil {
+					return err
+				}
+				if err := eq("beta 是否可空", nullable, "NO"); err != nil {
+					return err
+				}
+				if err := eq("beta 的默认值", def, ""); err != nil {
+					return err
+				}
+				return expectIndex(e, "ds_case_sort", "idx_alpha")
+			},
+		},
+		{
+			name:      "28 结构未同步时拒绝排序",
+			dir:       "sort_dirty",
+			desc:      "配置比库里多声明了一个字段，排序必须把差异列清楚并终止，提示先执行 ExecuteSchema",
+			sortMode:  true,
+			prepare:   prepareScrambledSortTable,
+			wantPanic: "请先执行 ExecuteSchema",
+		},
 	}
+}
+
+// prepareScrambledSortTable 造一张"结构与配置一致、只是字段顺序被打乱"的表。
+//
+// 用库自己按 sort_scrambled 的顺序建表，而不是手写 CREATE TABLE，
+// 是为了保证两边的列定义逐项相同（包括 DEFAULT ” 这种容易漏写的细节），
+// 这样表里剩下的唯一差异就是字段顺序，检验的才是排序本身。
+func prepareScrambledSortTable(e *env) error {
+	if err := e.db.Exec("DROP TABLE IF EXISTS `ds_case_sort`").Error; err != nil {
+		return err
+	}
+	out, rec := capture(func() {
+		newHandler(e, "sort_scrambled", false).ExecuteSchema()
+	})
+	if rec != nil {
+		return fmt.Errorf("建排序用例表失败：%v\n%s", rec, out)
+	}
+	return nil
 }
 
 // checkBuildSchema 校验编译产物：顺序、标量原文、以及从产物回读后与库结构一致
