@@ -1,31 +1,98 @@
+// Package bmap 提供对任意 JSON 形态数据的惰性视图。
+//
+// 它的核心用途是：拿到一份结构不固定、层级不确定的数据（接口响应、数据库里的
+// JSON 列、map[string]any、结构体……），用一个统一的入口按路径取值，
+// 而不必为每种响应都先定义一个结构体。
+//
+//	bm := bmap.Parse(resp)
+//	name := bm.Get("data.list.0.user.name").String()   // 中间任何一层不存在都不会 panic
+//
+// 三个设计要点：
+//
+//  1. 链式空安全。Get 走不通时返回一个"不存在"的节点而不是 nil，
+//     后续的 String()/Int()/Bool() 会返回各自的零值，调用方不需要层层判空。
+//     需要区分"值为零"和"路径不存在"时用 IsExists()。
+//
+//  2. 取值宽容。String/Int/Float/Bool/Time 都会尽力把底层值转成目标类型，
+//     转换不出来就返回零值。这样处理"数据库回来的值什么类型都有可能"时很省事，
+//     转换结果的口径向 tidwall/gjson 看齐。
+//
+//  3. 读写双向。Get 取值、Set 写值（自动创建中间层、按需把标量提升成数组）、
+//     Delete 删值、Fill/Scan 回填到结构体。
+//
+// # 路径语法
+//
+// 路径用 . 分段，数组用下标：
+//
+//	bm.Get("data.list.0.name")     // data -> list -> 第 0 个元素 -> name
+//
+// 键名里本身含有 . 时，用反斜杠转义（与 gjson 一致）：
+//
+//	bm.Get(`a\.b`)                 // 取键名字面量为 a.b 的那一项
+//
+// # Array() 的语义
+//
+// Array() 回答的是"把内容转成数组，然后看有几个"，所以任何不是数组的值
+// 都会被当成长度 1 的数组，元素就是它自己。接口有时返回一条记录、
+// 有时返回一批记录时，调用方可以用同一段 for range 处理，不用先判断形态。
+// 要区分"真数组"和"被提升的标量"，先用 IsArray()；要元素个数用 Len()。
+//
+// # Set 与 Delete 的两个特殊规则
+//
+// 路径段是纯数字时，容器按数组处理，长度不够会用 nil 补齐到目标下标：
+//
+//	bmap.Parse(map[string]any{}).Set("list.2", "v")   // {"list":[null,null,"v"]}
+//
+// 键名字面量以数字开头、不希望被当成数组下标时，加 ## 前缀：
+//
+//	bmap.Parse(map[string]any{}).Set("##0", "v")      // {"0":"v"}
+//
+// ## 只在写入时生效，写进去的键名就是去掉前缀之后的样子，读回来用 Get("0")。
+//
+// # 出错了怎么知道
+//
+// 取值链路上任何一段走不通都不会报错，只会得到零值，这是设计如此。
+// 真正会"失败"的只有两件事，都给了明确的出口：
+//
+//	bm.Err()                    // Parse 时那段文本看起来是 JSON 却解析不了
+//	bm.Get("x").IsExists()      // 区分"值就是零"和"路径根本不存在"
+//	bm.TimeE() / bm.Scan(&dst)  // 需要 error 的场合用带 E 的版本
+//
+// # 结构体与 tag
+//
+// 结构体会按 tag 名展开成 map，tag 名默认是 json，可以在 Parse 时指定：
+//
+//	bmap.Parse(form, "form")
+//
+// 展开规则与 encoding/json 大体对齐：未导出字段与 tag 为 "-" 的字段跳过，
+// omitempty 的零值跳过，匿名嵌入字段在没有自己的 tag 时平铺到上一层。
+// 实现了 json.Marshaler 的类型直接走它自己的 MarshalJSON。
+//
+// 有一处与 encoding/json 不同：嵌入的类型名本身是未导出时（例如嵌入一个小写的
+// localBase），整个嵌入字段会被跳过，它里面的字段不会被平铺上来。
+// 这是反射能力决定的——未导出的字段名会让 reflect 打上只读标记，
+// 对它调 Interface() 直接 panic。需要平铺就把嵌入的类型名写成导出的。
+//
+// 字段元信息按「类型 + tag 名」缓存，同一个结构体反复解析时不会重复走反射。
+//
+// # 遍历
+//
+// Foreach 遍历对象或数组，map 的顺序是随机的；
+// 需要稳定输出（拼日志、生成语句、做前后对比）用 SortedForeach，它按键的字典序走。
+//
+// # 并发
+//
+// 同一个 *BMap 不是并发安全的：取值器会在读取时解引用底层 reflect.Value，
+// 需要并发访问时各自 Parse 一份，或者只共享不可变的数据源。
+//
+// # 案例
+//
+// example_test.go 里有 67 个可运行案例，包内每一个导出方法都至少有一个。
+// 它们不碰数据库、不读文件，也不依赖机器时区，所以每一个都带 // Output: 注释，
+// go test 会真的跑一遍并逐字比对输出（单跑案例就能覆盖全包 88% 的语句）：
+//
+//	go test -run Example ./bmap/
+//
+// 每个案例的注释写的是"这个能力什么时候用、为什么这么设计"，
+// 具体规则的断言则在 bmap_test.go、structpkg_test.go、fill_test.go 里。
 package bmap
-
-import (
-	"encoding/json"
-	"reflect"
-)
-
-func strctVal(s interface{}) reflect.Value {
-	v := reflect.ValueOf(s)
-
-	// 如果是指针，获取指针指向的值
-	for v.Kind() == reflect.Ptr {
-		v = v.Elem()
-	}
-
-	if v.Kind() != reflect.Struct {
-		panic("not struct")
-	}
-
-	return v
-}
-
-// 判断类型是否实现 json.Marshaler
-func implementsJSONMarshaler(t reflect.Type) bool {
-	if t == nil {
-		return false
-	}
-	jsonMarshalerType := reflect.TypeOf((*json.Marshaler)(nil)).Elem()
-	return t.Implements(jsonMarshalerType) ||
-		reflect.PtrTo(t).Implements(jsonMarshalerType)
-}

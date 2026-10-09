@@ -21,4 +21,7 @@
 /cmd/test_schema_cases/out/
 
 # go build 在仓库根目录留下的可执行文件
+# （private/ 下的 main 包也会被 ./... 编到，产物落在当前目录）
 /verify_baseline
+/readme_check
+/readme_check2
