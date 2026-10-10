@@ -4,7 +4,9 @@
 [![Go Version](https://img.shields.io/badge/go-1.21%2B-00ADD8.svg)](https://go.dev/doc/devel/release)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
 
-几件反复要做、每次又得重写一遍的事，这里做成了库：
+致力于为基础数据提供高效而精准的处理方案。
+
+本仓库着重解决基础数据处理痛点：
 
 - **表结构同步**：yml 写表的目标结构，程序比对 `information_schema` 后只生成有差异的那部分 SQL，建表、字段增删改、类型、注释、可空性与默认值、索引、主键都在范围内。配置与库一致时不产生语句，可以重复执行；中间改过几轮不用记，只看最终结构。上线前可以 DryRun 预览、导出 SQL 交 DBA，变更报告里会标出删列、改主键这类高危项。分表展开、字段顺序对齐、字符集漂移、只发布加密编译产物另有开关。
 - **表结构转 Go 模型**：根据库里已有的表生成结构体，字段名写法、标签、包名、时间类型都可以配，省去手写字段。
