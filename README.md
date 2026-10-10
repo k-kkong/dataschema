@@ -64,7 +64,6 @@ go get github.com/k-kkong/dataschema
 
 - Go 1.21+
 - MySQL 5.7 / 8.0（仅表结构同步与模型生成需要；`bmap`、`gslicer`、`dvap2` 的内存计算部分不需要数据库）
-- 数据库连接串一律走环境变量 `APP_MYSQL_DSN`，不要写进代码：
 
 ```bash
 export APP_MYSQL_DSN="user:pwd@(127.0.0.1:3306)/test_kk?charset=utf8mb4&parseTime=True&loc=Local"
@@ -192,7 +191,7 @@ go run ./cmd/test_schema_cases -no-reset        # 开始前不清理上一轮留
 `ExecuteSchema` 默认**不挪已经存在的列**：新增的列按 yml 顺序落位，存量列保持原位。
 这是刻意的——调列顺序在 MySQL 上意味着重建整表。
 
-确实需要把存量表的字段顺序对齐到 yml 时，单独接入 `SortFieldsWithYaml`，由使用者自己决定什么时机做：
+当用户需要把存量表的字段顺序对齐到 yml 时，单独接入 `SortFieldsWithYaml`，由使用者自己决定什么时机做：
 
 | 方法 | 做什么 | 代价 |
 | --- | --- | --- |
