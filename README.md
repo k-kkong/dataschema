@@ -44,9 +44,9 @@ go get github.com/k-kkong/dataschema
 | 包 | 第三方依赖 |
 | --- | --- |
 | `dataschema`（根包） | `gorm.io/gorm`、`gorm.io/driver/mysql`、`gopkg.in/yaml.v3`、`tidwall/gjson` |
-| `bmap` | `tidwall/gjson` |
+| `bmap` | `tidwall/gjson`、`json-iterator/go`（解析 JSON 文本用，口径与标准库一致） |
 | `gslicer` | 无，只用标准库 |
-| `dvap2` | `gorm.io/gorm`、本仓库的 `bmap` 与 `gslicer`、`tidwall/gjson`、`tidwall/sjson`、`novalagung/gubrak` |
+| `dvap2` | `gorm.io/gorm`、本仓库的 `bmap` 与 `gslicer`、`tidwall/gjson`、`tidwall/sjson`、`json-iterator/go`、`novalagung/gubrak` |
 
 只导入 `gslicer` 或 `bmap` 时，gorm 不会进入你的构建依赖。
 
