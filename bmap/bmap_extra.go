@@ -188,10 +188,11 @@ func (bm *BMap) SortedForeach(f func(key string, value *BMap) bool) {
 		// 排序之后不能用 Get(key) 回查，键名里含点时会被当成路径。
 		values := make(map[string]reflect.Value, v.Len())
 		keys := make([]string, 0, v.Len())
-		for _, k := range v.MapKeys() {
-			s := fmt.Sprint(k.Interface())
+		iter := v.MapRange()
+		for iter.Next() {
+			s := mapKeyString(iter.Key())
 			keys = append(keys, s)
-			values[s] = v.MapIndex(k)
+			values[s] = iter.Value()
 		}
 		sort.Strings(keys)
 		for _, k := range keys {

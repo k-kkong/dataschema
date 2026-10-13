@@ -133,6 +133,17 @@ func mapIndex(m reflect.Value, key string) reflect.Value {
 	return reflect.Value{}
 }
 
+// mapKeyString 把 map 的键转成字符串。
+//
+// 键绝大多数时候本来就是 string，直接取，省掉 fmt.Sprint 的装箱与格式化；
+// 只有 yaml 解析出来的 map[any]any 这类非字符串键才退回 fmt.Sprint。
+func mapKeyString(k reflect.Value) string {
+	if k.Kind() == reflect.String {
+		return k.String()
+	}
+	return fmt.Sprint(k.Interface())
+}
+
 // looksLikeJSON 判断一段文本是不是想当 JSON 用。
 //
 // 只有以 { 或 [ 开头的文本解析失败才算错误：
@@ -140,6 +151,36 @@ func mapIndex(m reflect.Value, key string) reflect.Value {
 func looksLikeJSON(s string) bool {
 	s = strings.TrimSpace(s)
 	return strings.HasPrefix(s, "{") || strings.HasPrefix(s, "[")
+}
+
+// couldBeJSON 判断一段文本有没有可能被解析成 JSON，用在真正解析之前挡掉普通文本。
+//
+// 跳过前导空白后只看第一个字符：它可能是一个 JSON 值的开头才放行——
+// { [ " - 和数字直接放行；t/f/n 还要求确实以 true/false/null 开头，
+// 这样 "tiger"、"nullify" 这类普通词不会被误当成字面量送去解析。
+//
+// 判定必须保守：任何能被 jsonAPI 解析成功的输入都要放行，挡掉的只是
+// 「一定解析失败」的文本。所以它只省开销、不改变 Parse 的结果——一段文本
+// 要么本来就解析成功（放行后照常解析），要么本来就失败（挡掉后按普通字符串保留）。
+func couldBeJSON(s string) bool {
+	i := 0
+	for i < len(s) && (s[i] == ' ' || s[i] == '\t' || s[i] == '\n' || s[i] == '\r') {
+		i++
+	}
+	if i >= len(s) {
+		return false
+	}
+	switch c := s[i]; {
+	case c == '{' || c == '[' || c == '"' || c == '-' || (c >= '0' && c <= '9'):
+		return true
+	case c == 't':
+		return strings.HasPrefix(s[i:], "true")
+	case c == 'f':
+		return strings.HasPrefix(s[i:], "false")
+	case c == 'n':
+		return strings.HasPrefix(s[i:], "null")
+	}
+	return false
 }
 
 // splitPath 按 . 把路径切成分段，键名里本身含点时用 \. 转义（与 gjson 一致）。
@@ -276,11 +317,15 @@ func Parse(data any, opts ...string) *BMap {
 		// 这里用 rv.String() 而不是 data.(string)：后者遇到
 		// type MyJSON string 这样的命名类型会直接 panic。
 		text := rv.String()
-		var sv any
-		if jsonAPI.Unmarshal([]byte(text), &sv) == nil {
-			rv = reflect.ValueOf(sv)
-		} else if looksLikeJSON(text) {
-			badJSON = true
+		// 被 Parse 的字符串绝大多数是普通文本（人名、订单号、一段话），
+		// 先用 couldBeJSON 挡掉这些一定解析不出 JSON 的输入，省掉一次白跑的解析。
+		if couldBeJSON(text) {
+			var sv any
+			if jsonAPI.Unmarshal([]byte(text), &sv) == nil {
+				rv = reflect.ValueOf(sv)
+			} else if looksLikeJSON(text) {
+				badJSON = true
+			}
 		}
 	case reflect.Slice, reflect.Array:
 		if b, ok := bytesOf(rv); ok {
@@ -376,7 +421,22 @@ func (bm *BMap) step(cur reflect.Value, p string) (reflect.Value, bool) {
 
 	switch k {
 	case reflect.Map:
-		if t := cur.Type(); t == typeMapStringAny || t.Key() == typeString {
+		// map[string]any 是 JSON 物化后的压倒多数形态，用原生索引直接查：
+		// 走 reflect 的 MapIndex 每层都要把键装箱成 Value，在逐段取值的循环里是白花的分配。
+		if cur.Type() == typeMapStringAny {
+			m := cur.Interface().(map[string]any)
+			v, found := m[p]
+			if !found {
+				return reflect.Value{}, false
+			}
+			// 键在、值是 null 时，reflect.ValueOf(nil) 是无效值，会把「值为 null」
+			// 误判成「键不存在」；用一个 interface 值兜住，保持「存在且为 nil」的语义。
+			if v == nil {
+				return reflect.ValueOf(&v).Elem(), true
+			}
+			return reflect.ValueOf(v), true
+		}
+		if t := cur.Type(); t.Key() == typeString {
 			mv := cur.MapIndex(reflect.ValueOf(p))
 			return mv, mv.IsValid()
 		}
@@ -685,10 +745,13 @@ func (bm *BMap) Foreach(f func(key string, value *BMap) bool) {
 			}
 		}
 	case reflect.Map:
-		for _, keyv := range v.MapKeys() {
-			// 值直接从 map 里取，不能再走一遍 Get(key)：
+		// 用 MapRange 迭代器一次遍历：键和值一起拿到，
+		// 省掉先收集整个键切片、再逐个按键回查值的两次 map 操作。
+		iter := v.MapRange()
+		for iter.Next() {
+			// 值直接取自迭代器，不能再走一遍 Get(key)：
 			// 键名里含点时 Get 会把它当成路径，取到的是空值。
-			if !f(fmt.Sprint(keyv.Interface()), bm.child(v.MapIndex(keyv))) {
+			if !f(mapKeyString(iter.Key()), bm.child(iter.Value())) {
 				return
 			}
 		}
